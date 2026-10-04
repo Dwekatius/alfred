@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Alfred</title>
   <link rel="stylesheet" href="/style.css" />
-  <link rel="icon" id="faviconLink" type="image/png" href="/favicon.png" />
+  <link rel="icon" id="faviconLink" type="image/png" href="/favicon.png?v=2" />
   <meta name="theme-color" content="#ffffff" />
   <script>
     (function () {
@@ -18,7 +18,7 @@
         document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
         document.documentElement.setAttribute("data-theme-mode", stored);
         var favicon = document.getElementById("faviconLink");
-        if (favicon) favicon.setAttribute("href", dark ? "/favicon-dark.png" : "/favicon.png");
+        if (favicon) favicon.setAttribute("href", dark ? "/favicon-dark.png?v=2" : "/favicon.png?v=2");
       } catch (error) { /* defaults to light */ }
     })();
   </script>
@@ -27,8 +27,8 @@
   <header class="topbar">
     <div class="brand">
       <span class="brand-mark">
-        <img class="logo-light" src="/logo.png" alt="" />
-        <img class="logo-dark" src="/logo-dark.png" alt="" />
+        <img class="logo-light" src="/logo.png?v=2" alt="" />
+        <img class="logo-dark" src="/logo-dark.png?v=2" alt="" />
         <span class="dot" id="statusDot"></span>
       </span>
       <div>

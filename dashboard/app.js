@@ -32,7 +32,8 @@
     const meta = document.querySelector('meta[name="theme-color"]');
     if (meta) meta.setAttribute("content", resolved === "dark" ? "#0b0b0c" : "#ffffff");
     const favicon = $("faviconLink");
-    if (favicon) favicon.setAttribute("href", resolved === "dark" ? "/favicon-dark.png" : "/favicon.png");
+    // Versioned so a changed logo is never served from a browser's favicon cache.
+    if (favicon) favicon.setAttribute("href", resolved === "dark" ? "/favicon-dark.png?v=2" : "/favicon.png?v=2");
     if (state.chart.buckets.length) drawChart();
   }
 
