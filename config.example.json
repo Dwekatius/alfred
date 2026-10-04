@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 1,
+  "dryRun": false,
+  "dataRoot": "C:\\Users\\YOUR_USERNAME\\.pi\\alfred",
+  "workRoot": "C:\\Users\\YOUR_USERNAME\\.pi\\alfred\\work",
+  "timeZone": "UTC",
+  "telegram": {
+    "tokenSecretName": "alfred/bot-token",
+    "ownerUserId": null,
+    "ownerChatId": null,
+    "pollTimeoutSeconds": 25,
+    "allowedUpdates": [
+      "message",
+      "callback_query"
+    ]
+  },
+  "models": {
+    "authPath": "C:\\Users\\YOUR_USERNAME\\.pi\\agent\\auth.json",
+    "baseModelsPath": "C:\\Users\\YOUR_USERNAME\\.pi\\agent\\models.json",
+    "catalogSeedPath": "C:\\Users\\YOUR_USERNAME\\.pi\\agent\\models-store.json",
+    "selectedSlot": "deepseek",
+    "thinking": "high",
+    "allowAutomaticModelFallback": false,
+    "slots": {
+      "deepseek": {
+        "provider": "deepseek",
+        "modelId": "deepseek-flash",
+        "label": "DeepSeek V4.1 Flash"
+      },
+      "zai": {
+        "provider": "zai",
+        "modelId": "glm-5.3-flash",
+        "label": "ZAI GLM Flash"
+      },
+      "anthropic": {
+        "provider": "anthropic",
+        "modelId": "claude-sonnet-5-5",
+        "label": "Anthropic Claude"
+      },
+      "openai": {
+        "provider": "openai",
+        "modelId": "gpt-6.1-sol",
+        "label": "OpenAI"
+      },
+      "openrouter": {
+        "provider": "openrouter",
+        "modelId": "stealth/space-bunny-alpha",
+        "label": "OpenRouter (free model)",
+        "routing": {
+          "only": [
+            "stealth"
+          ],
+          "allow_fallbacks": false
+        },
+        "requireZeroTokenPrice": true
+      },
+      "lmstudio": {
+        "provider": "lmstudio",
+        "modelId": "local-model",
+        "label": "LM Studio (local)",
+        "endpoint": {
+          "baseUrl": "http://127.0.0.1:1234/v1",
+          "api": "openai-completions",
+          "apiKey": "lm-studio",
+          "models": [
+            {
+              "id": "local-model",
+              "name": "Local model",
+              "input": [
+                "text",
+                "image"
+              ],
+              "contextWindow": 32768,
+              "maxTokens": 8192,
+              "reasoning": false
+            }
+          ]
+        }
+      }
+    }
+  },
+  "desktop": {
+    "requireUnlockedSession": true,
+    "observationMaxAgeMs": 60000,
+    "nativeToolTimeoutMs": 20000,
+    "pauseOnObservedHumanInput": true,
+    "localStopHotkey": "Ctrl+Alt+F9"
+  },
+  "browser": {
+    "executablePath": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "profileDir": "C:\\Users\\YOUR_USERNAME\\.pi\\alfred\\browser\\profile",
+    "outputDir": "C:\\Users\\YOUR_USERNAME\\.pi\\alfred\\browser\\output",
+    "headed": true,
+    "showActions": true
+  },
+  "jobs": {
+    "maxQueued": 5,
+    "maxRunSeconds": 1800,
+    "maxToolCalls": 150,
+    "maxModelTurns": 60,
+    "maxConsecutiveNoProgress": 3,
+    "autoStartMaxAgeSeconds": 600,
+    "stopGraceMs": 3000
+  },
+  "artifacts": {
+    "retentionDays": 7,
+    "maxTotalMiB": 1024,
+    "inboundMaxMiB": 10,
+    "photoTargetMiB": 4,
+    "sendExactPngOnRequest": true
+  },
+  "notifications": {
+    "progressMinimumIntervalSeconds": 15,
+    "automaticStepScreenshots": false,
+    "completionScreenshot": "when-useful"
+  }
+}

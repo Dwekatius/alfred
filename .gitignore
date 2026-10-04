@@ -1,0 +1,35 @@
+# Dependencies and build output
+/node_modules/
+/dist/
+*.tsbuildinfo
+
+# Python virtual environment
+/.venv/
+__pycache__/
+*.pyc
+
+# Private runtime state (never commit). Anchored to the project root so that
+# source folders with the same names (for example src/artifacts/) stay tracked.
+/config.json
+/config.local.json
+/secrets/
+/state/
+/sessions/
+/artifacts/
+/logs/
+/work/
+/manifests/
+/browser/profile/
+/browser/output/
+
+# Local environment overrides
+.env
+.env.*
+
+# Temporary development scratch
+/.test-tmp/
+
+# OS noise
+Thumbs.db
+desktop.ini
+.DS_Store

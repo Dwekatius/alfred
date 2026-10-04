@@ -1,0 +1,104 @@
+{
+  "deepseek": {
+    "models": [
+      {
+        "id": "deepseek-flash",
+        "name": "DeepSeek V4.1 Flash",
+        "api": "openai-completions",
+        "baseUrl": "https://api.deepseek.com",
+        "provider": "deepseek",
+        "reasoning": true,
+        "thinkingLevelMap": {
+          "minimal": null,
+          "low": "low",
+          "medium": null,
+          "high": "high",
+          "max": "max"
+        },
+        "input": [
+          "text",
+          "image"
+        ],
+        "cost": {
+          "input": 0.3,
+          "output": 1.2,
+          "cacheRead": 0.006,
+          "cacheWrite": 0
+        },
+        "contextWindow": 1000000,
+        "maxTokens": 384000,
+        "compat": {
+          "supportsStore": false,
+          "supportsDeveloperRole": false,
+          "maxTokensField": "max_tokens",
+          "requiresReasoningContentOnAssistantMessages": true,
+          "thinkingFormat": "deepseek",
+          "supportsStrictMode": true
+        },
+        "inputLimits": {
+          "images": {
+            "resize": {
+              "maxWidth": 2000,
+              "maxHeight": 2000,
+              "maxBytes": 4718592,
+              "jpegQuality": 80
+            }
+          }
+        },
+        "type": "chat"
+      }
+    ],
+    "checkedAt": "2026-10-04T14:41:31.629Z"
+  },
+  "openrouter": {
+    "models": [
+      {
+        "type": "chat",
+        "id": "stealth/space-bunny-alpha",
+        "name": "Space Bunny Alpha",
+        "api": "openai-completions",
+        "baseUrl": "https://openrouter.ai/api/v1",
+        "provider": "openrouter",
+        "reasoning": true,
+        "thinkingLevelMap": {
+          "off": null,
+          "minimal": null,
+          "low": "low",
+          "medium": "medium",
+          "high": "high",
+          "xhigh": "xhigh",
+          "max": "max"
+        },
+        "input": [
+          "text",
+          "image"
+        ],
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0
+        },
+        "contextWindow": 1000000,
+        "maxTokens": 524288,
+        "compat": {
+          "supportsDeveloperRole": false,
+          "thinkingFormat": "openrouter",
+          "supportsStrictMode": true,
+          "sendSessionAffinityHeaders": true
+        },
+        "inputLimits": {
+          "images": {
+            "resize": {
+              "maxWidth": 2000,
+              "maxHeight": 2000,
+              "maxBytes": 4718592,
+              "jpegQuality": 80
+            }
+          }
+        }
+      }
+    ],
+    "checkedAt": "2026-10-04T14:41:31.631Z"
+  }
+}

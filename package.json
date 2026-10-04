@@ -1,0 +1,41 @@
+{
+  "name": "alfred",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "description": "Telegram-controlled Pi agent with Windows desktop and visible Chrome computer use.",
+  "type": "module",
+  "engines": {
+    "node": ">=24.15.0 <25"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test --test-reporter=spec \"dist/tests/unit/*.test.js\" \"dist/tests/integration/*.test.js\"",
+    "test:unit": "npm run build && node --test --test-reporter=spec \"dist/tests/unit/*.test.js\"",
+    "start": "node dist/src/main.js",
+    "dev": "npm run build && node dist/src/main.js",
+    "doctor": "node dist/src/doctor.js",
+    "pair": "node dist/src/pair-local.js",
+    "status": "node dist/src/local-cli.js status",
+    "stop": "node dist/src/local-cli.js stop",
+    "install-startup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-startup.ps1",
+    "remove-startup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/remove-startup.ps1",
+    "tray": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tray.ps1",
+    "install-tray": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-tray.ps1 -Startup",
+    "remove-tray": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/remove-tray.ps1",
+    "dashboard": "node dist/src/dashboard.js",
+    "install-dashboard": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-dashboard.ps1"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.99.1",
+    "@modelcontextprotocol/sdk": "1.32.0",
+    "@playwright/mcp": "0.0.83",
+    "sharp": "0.35.5",
+    "typebox": "1.3.27"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.1",
+    "typescript": "5.9.3"
+  }
+}

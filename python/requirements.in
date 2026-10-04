@@ -1,0 +1,4 @@
+# Direct Python dependencies for the Telegram Pi agent.
+# The full pinned tree is in requirements.lock.txt (resolved with pip on
+# Python 3.14 / win_amd64; pip freeze alone does not provide hashes).
+windows-mcp==0.8.7

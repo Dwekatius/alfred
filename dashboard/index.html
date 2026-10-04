@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Alfred</title>
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="icon" id="faviconLink" type="image/png" href="/favicon.png" />
+  <meta name="theme-color" content="#ffffff" />
+  <script>
+    (function () {
+      try {
+        var params = new URLSearchParams(location.search);
+        var fromUrl = params.get("theme");
+        var stored = fromUrl || localStorage.getItem("pi-theme") || "system";
+        if (fromUrl) localStorage.setItem("pi-theme", fromUrl);
+        var dark = stored === "dark" || (stored === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+        document.documentElement.setAttribute("data-theme-mode", stored);
+        var favicon = document.getElementById("faviconLink");
+        if (favicon) favicon.setAttribute("href", dark ? "/favicon-dark.png" : "/favicon.png");
+      } catch (error) { /* defaults to light */ }
+    })();
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">
+        <img class="logo-light" src="/logo.png" alt="" />
+        <img class="logo-dark" src="/logo-dark.png" alt="" />
+        <span class="dot" id="statusDot"></span>
+      </span>
+      <div>
+        <h1>Alfred</h1>
+        <div class="sub" id="statusText">connecting…</div>
+      </div>
+    </div>
+    <nav class="tabs">
+      <button id="tabDashboard" class="tab active">Dashboard</button>
+      <button id="tabSetup" class="tab">Setup guide</button>
+      <button id="tabSettings" class="tab">Settings</button>
+    </nav>
+    <div class="chips">
+      <span class="chip" id="modelChip">model …</span>
+      <span class="chip" id="pairedChip">paired …</span>
+      <span class="chip" id="taskChip">service …</span>
+    </div>
+  </header>
+
+  <section class="controls">
+    <button id="primaryBtn" class="btn primary">Start assistant</button>
+    <button id="restartBtn" class="btn">Restart</button>
+    <button id="pauseBtn" class="btn" disabled>Pause</button>
+    <button id="resumeBtn" class="btn" disabled>Resume</button>
+    <span class="hint" id="actionHint"></span>
+    <span class="spacer"></span>
+    <span class="seg theme-seg" id="themeSeg" title="Theme">
+      <button data-theme="system">Auto</button>
+      <button data-theme="light">Light</button>
+      <button data-theme="dark">Dark</button>
+    </span>
+  </section>
+
+  <main class="grid" id="dashboardPage">
+    <section class="panel terminal-panel">
+      <div class="panel-head">
+        <h2>Model activity</h2>
+        <div class="toolbar">
+          <span class="tps" id="tpsReadout" title="Decode tokens per second of the last completed response">TPS —</span>
+          <label class="toggle"><input type="checkbox" id="showThinking" checked /> <span>thinking</span></label>
+          <label class="toggle"><input type="checkbox" id="showAnswers" checked /> <span>answers</span></label>
+          <label class="toggle"><input type="checkbox" id="showTools" checked /> <span>tools</span></label>
+          <label class="toggle"><input type="checkbox" id="autoscroll" checked /> <span>autoscroll</span></label>
+          <button id="clearBtn" class="btn small">Clear</button>
+        </div>
+      </div>
+      <div id="terminal" class="terminal">
+        <div class="term-empty" id="termEmpty">Waiting for model activity. Send the bot a message in Telegram.</div>
+      </div>
+    </section>
+
+    <section class="panel usage-panel">
+      <div class="panel-head">
+        <h2>Usage &amp; cost</h2>
+        <div class="toolbar">
+          <div class="seg" id="metricSeg">
+            <button data-metric="cost" class="active">Cost (USD)</button>
+            <button data-metric="tokens">Tokens</button>
+          </div>
+          <div class="seg" id="bucketSeg">
+            <button data-bucket="day" class="active">Day</button>
+            <button data-bucket="week">Week</button>
+            <button data-bucket="month">Month</button>
+          </div>
+        </div>
+      </div>
+      <div class="chart-wrap">
+        <canvas id="chart"></canvas>
+        <div id="tooltip" class="tooltip hidden"></div>
+      </div>
+      <div class="legend">
+        <span class="legend-item"><i class="swatch input"></i> input</span>
+        <span class="legend-item"><i class="swatch output"></i> output</span>
+        <span class="legend-item"><i class="swatch cost"></i> cost</span>
+        <span class="legend-total" id="periodTotal"></span>
+      </div>
+      <div class="totals">
+        <div class="total"><span class="label">Today</span><span class="value" id="totalToday">–</span></div>
+        <div class="total"><span class="label">This week</span><span class="value" id="totalWeek">–</span></div>
+        <div class="total"><span class="label">This month</span><span class="value" id="totalMonth">–</span></div>
+        <div class="total"><span class="label">All time</span><span class="value" id="totalAll">–</span></div>
+      </div>
+    </section>
+  </main>
+
+  <section class="setup hidden" id="setupPage">
+    <div class="setup-inner">
+      <h2 class="setup-title">Set up your assistant</h2>
+      <p class="lead">
+        Follow the steps in order. Green checks update automatically — everything runs on this PC, and secrets are
+        encrypted with Windows DPAPI (never sent anywhere except the services you configure).
+      </p>
+
+      <div class="checkstrip" id="setupChecks"></div>
+
+      <article class="card" id="step-prereq">
+        <div class="step"><span class="step-num">01</span><h3>Install the prerequisites</h3></div>
+        <p>You need these on the PC. If you launched <b>Setup Alfred.cmd</b>, Node and the Python
+        environment were installed automatically — this checklist just confirms it.</p>
+        <ul class="prereq" id="prereqList"></ul>
+        <p class="muted">Downloads: <a href="https://nodejs.org/" target="_blank" rel="noreferrer">Node.js 24 LTS</a> ·
+        <a href="https://www.python.org/downloads/release/python-3140/" target="_blank" rel="noreferrer">Python 3.14</a> ·
+        <a href="https://www.google.com/chrome/" target="_blank" rel="noreferrer">Google Chrome</a>. If you install
+        Python, tick <b>“Add python.exe to PATH”</b> in the installer.</p>
+      </article>
+
+      <article class="card" id="step-bot">
+        <div class="step"><span class="step-num">02</span><h3>Create your own Telegram bot</h3></div>
+        <ol class="guide">
+          <li>Open Telegram and search for <b>@BotFather</b> (the verified account with a blue check).</li>
+          <li>Send <code>/newbot</code>. Choose a display name (anything) and a username that <b>ends in “bot”</b>,
+              e.g. <code>mohans_pc_agent_bot</code>.</li>
+          <li>BotFather replies with a token that looks like <code>123456789:AAH...</code>. Copy the whole line.</li>
+          <li>Paste it below and press <b>Verify &amp; save</b>. It is checked with Telegram, then encrypted on disk.</li>
+        </ol>
+        <div class="field-row">
+          <input id="tokenInput" class="input" type="password" placeholder="123456789:AAH... your bot token" autocomplete="off" />
+          <button id="tokenSaveBtn" class="btn primary">Verify &amp; save</button>
+        </div>
+        <div class="status-line" id="tokenResult"></div>
+        <div class="field-row hidden" id="webhookRow">
+          <span class="muted">This bot has a webhook configured, which blocks polling.</span>
+          <button id="webhookDeleteBtn" class="btn">Delete webhook and continue</button>
+        </div>
+      </article>
+
+      <article class="card" id="step-pair">
+        <div class="step"><span class="step-num">03</span><h3>Pair your Telegram chat</h3></div>
+        <p>Only your account may talk to the bot. We verify it with a one-time code that exists only on this PC.</p>
+        <button id="pairStartBtn" class="btn primary">Start pairing</button>
+        <div id="pairBox" class="pair-box hidden">
+          <p><b>1.</b> Open the chat with your bot:
+            <a id="pairLink" href="#" target="_blank" rel="noreferrer">open in Telegram</a>
+            (or search for <code id="pairBotUsername">@yourbot</code>).</p>
+          <p><b>2.</b> Press <b>START</b>, or send this exact command:</p>
+          <div class="copyline"><code id="pairCode">/start ...</code><button class="btn small copy-btn" data-copy="pairCode">Copy</button></div>
+          <p><b>3.</b> Come back here and accept <span id="pairCandidate">your account</span> as the owner.</p>
+          <div class="status-line" id="pairStatus">Waiting for your /start message…</div>
+          <div class="field-row">
+            <button id="pairAcceptBtn" class="btn primary" disabled>Accept as owner</button>
+            <button id="pairCancelBtn" class="btn">Cancel pairing</button>
+          </div>
+        </div>
+        <div class="status-line" id="pairDone"></div>
+      </article>
+
+      <article class="card" id="step-model">
+        <div class="step"><span class="step-num">04</span><h3>Choose the AI model</h3></div>
+        <p>Any number of model slots are supported. The slot marked <b>ACTIVE</b> handles the next job;
+        switch in Telegram with <code>/model &lt;slot&gt;</code>. Keys are validated against the provider and stored
+        with Windows DPAPI. Local OpenAI-compatible servers (LM Studio, Ollama, vLLM) need no cloud key.</p>
+        <div id="slotList" class="slot-list"></div>
+        <div class="add-provider">
+          <span class="field-label">Add a provider</span>
+          <div id="presetList" class="preset-list"></div>
+        </div>
+        <div id="slotEditor" class="slot-editor hidden"></div>
+        <div class="status-line" id="modelResult"></div>
+      </article>
+
+      <article class="card" id="step-browser">
+        <div class="step"><span class="step-num">05</span><h3>Sign in to your accounts (browser)</h3></div>
+        <p>The agent uses its <b>own Chrome profile</b> so your normal browsing stays private and untouched.
+        Sign in once to Gmail or any other site you want it to use, then <b>close that Chrome window</b>.</p>
+        <button id="browserSigninBtn" class="btn">Open Chrome for sign-in</button>
+        <div class="status-line" id="browserResult"></div>
+      </article>
+
+      <article class="card" id="step-start">
+        <div class="step"><span class="step-num">06</span><h3>Start using it</h3></div>
+        <p>Start the assistant, then message your bot from Telegram.</p>
+        <div class="field-row">
+          <button id="setupStartBtn" class="btn primary">Start assistant</button>
+          <button id="setupDashboardBtn" class="btn">Watch the dashboard</button>
+        </div>
+        <p class="muted">Try these in the chat:</p>
+        <pre class="code">Summarize the latest 10 emails in my inbox and list anything urgent.
+Open Notepad, write a short report about today, save it on my Desktop, and send a screenshot.
+/screenshot      /status      /pause      /resume      /stop
+/model deepseek  /model openrouter &lt;model-id&gt;  /provider auto  /thinking max</pre>
+        <p class="muted">Stopping: <code>Ctrl+Alt+F9</code> on the PC is the emergency stop. The tray icon
+        (bottom-right) can pause, resume, and stop the agent any time.</p>
+      </article>
+
+      <article class="card">
+        <div class="step"><span class="step-num">?</span><h3>Troubleshooting</h3></div>
+        <details>
+          <summary>The bot does not reply</summary>
+          <ul>
+            <li>Check the status dot at the top — if the assistant is stopped, press <b>Start assistant</b>.</li>
+            <li>Make sure you paired the right Telegram account (step 3) and that you message the bot's private chat.</li>
+            <li>On the PC: the tray icon turns gray when the agent is stopped; red/orange means a problem — open the logs.</li>
+            <li>If you restarted the PC, sign in to Windows — the agent starts automatically at sign-in.</li>
+          </ul>
+        </details>
+        <details>
+          <summary>It replies but cannot click or type</summary>
+          <ul>
+            <li>The PC must be unlocked. A locked screen pauses desktop actions on purpose.</li>
+            <li>Windows blocks automation of elevated (admin) windows. If an app runs as administrator, tell the agent and it will explain the limitation.</li>
+            <li>If it says the observation is stale, just try again — it re-takes a screenshot.</li>
+          </ul>
+        </details>
+        <details>
+          <summary>Clicks land in the wrong place</summary>
+          <ul>
+            <li>Don't change the display scaling or move windows while it is working.</li>
+            <li>Ask it to take a fresh screenshot before each step; it is designed to do that automatically.</li>
+          </ul>
+        </details>
+        <details>
+          <summary>Chrome lost the site login</summary>
+          <ul>
+            <li>Open the sign-in button above and log in again in the agent's dedicated profile.</li>
+            <li>Websites still expire sessions or ask for CAPTCHA/MFA. Complete it in the visible window and tell the agent to continue.</li>
+          </ul>
+        </details>
+        <details>
+          <summary>The free OpenRouter model stopped working</summary>
+          <ul>
+            <li>Free models are rate-limited and occasionally unavailable. Switch to DeepSeek with <code>/model deepseek</code>.</li>
+          </ul>
+        </details>
+        <details>
+          <summary>Where are the logs and data?</summary>
+          <ul>
+            <li>Everything lives under your user profile: <code id="dataRootPath">%USERPROFILE%\.pi\alfred</code></li>
+            <li><b>logs</b> - structured diagnostics (no secrets), <b>artifacts</b> - screenshots, <b>sessions</b> - chat transcripts.</li>
+            <li>Backups: <code>powershell -File scripts\backup.ps1</code></li>
+          </ul>
+        </details>
+      </article>
+    </div>
+  </section>
+
+  <section class="setup hidden" id="settingsPage">
+    <div class="setup-inner">
+      <h2 class="setup-title">Settings</h2>
+      <p class="lead">These apply to this PC. Most changes take effect for the next job; the startup toggle applies immediately.</p>
+
+      <article class="card" id="settings-startup">
+        <div class="step"><span class="step-num">01</span><h3>Startup</h3></div>
+        <div class="setting-row">
+          <div class="setting-copy">
+            <b>Start assistant when I sign in to Windows</b>
+            <span id="startupStatus">checking…</span>
+          </div>
+          <label class="switch"><input type="checkbox" id="startupToggle" /><span></span></label>
+        </div>
+        <div class="status-line" id="startupResult"></div>
+        <p class="muted">Registers a per-user logon task that runs hidden with your normal privileges — the browser and the apps it controls stay visible. Turning this off does not delete the tray shortcut, your sessions, or the browser profile.</p>
+      </article>
+
+      <article class="card" id="settings-behaviour">
+        <div class="step"><span class="step-num">02</span><h3>Behaviour</h3></div>
+        <div class="setting-row">
+          <div class="setting-copy"><b>Pause when I use the mouse or keyboard</b><span>Physical input stops the agent at the next safe boundary.</span></div>
+          <label class="switch"><input type="checkbox" id="pauseInputToggle" /><span></span></label>
+        </div>
+        <div class="setting-row">
+          <div class="setting-copy"><b>Emergency stop hotkey</b><span>Pressed on this PC, it cancels the active job immediately.</span></div>
+          <input id="hotkeyInput" class="input compact" type="text" />
+        </div>
+        <div class="setting-row">
+          <div class="setting-copy"><b>Longest a task may run</b><span>Minutes before the agent stops and reports partial progress.</span></div>
+          <input id="maxRunInput" class="input compact" type="number" min="1" max="1440" />
+        </div>
+        <div class="setting-row">
+          <div class="setting-copy"><b>Maximum queued tasks</b><span>Extra messages wait in line behind the active job.</span></div>
+          <input id="maxQueuedInput" class="input compact" type="number" min="1" max="100" />
+        </div>
+        <div class="field-row"><button id="saveBehaviourBtn" class="btn primary">Save behaviour settings</button></div>
+        <div class="status-line" id="behaviourResult"></div>
+      </article>
+
+      <article class="card" id="settings-data">
+        <div class="step"><span class="step-num">03</span><h3>Storage &amp; data</h3></div>
+        <div class="setting-row">
+          <div class="setting-copy"><b>Keep screenshots and files for</b><span>Days before artifacts are cleaned up. Pending deliveries are protected.</span></div>
+          <input id="retentionInput" class="input compact" type="number" min="1" max="3650" />
+        </div>
+        <div class="field-row">
+          <button id="saveDataBtn" class="btn primary">Save storage settings</button>
+          <button class="btn" data-open="logs">Open logs folder</button>
+          <button class="btn" data-open="config">Open config file</button>
+          <button class="btn" data-open="doctor">Run doctor</button>
+        </div>
+        <div class="status-line" id="dataResult"></div>
+        <div class="about-list" id="aboutPaths"></div>
+      </article>
+
+      <article class="card" id="settings-appearance">
+        <div class="step"><span class="step-num">04</span><h3>Appearance</h3></div>
+        <div class="setting-row">
+          <div class="setting-copy"><b>Theme</b><span>Auto follows the Windows light/dark setting.</span></div>
+          <span class="seg theme-seg" id="themeSegSettings">
+            <button data-theme="system">Auto</button>
+            <button data-theme="light">Light</button>
+            <button data-theme="dark">Dark</button>
+          </span>
+        </div>
+      </article>
+
+      <article class="card" id="settings-about">
+        <div class="step"><span class="step-num">05</span><h3>About</h3></div>
+        <div class="about-list" id="aboutVersions"></div>
+        <p class="muted">Unofficial project — not affiliated with Earendil Works (pi.dev), Microsoft, Google, Telegram, OpenAI, Anthropic, DeepSeek or Z.AI. Dependency licenses are listed in THIRD_PARTY_NOTICES.md.</p>
+      </article>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <span id="footerInfo">local dashboard · 127.0.0.1</span>
+  </footer>
+
+  <script>window.PI_TOKEN = "__PI_TOKEN__";</script>
+  <script src="/app.js"></script>
+</body>
+</html>
