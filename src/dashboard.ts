@@ -330,9 +330,10 @@ async function getTaskState(): Promise<string> {
   return state;
 }
 
-async function runPowerShell(command: string): Promise<{ ok: boolean; error?: string }> {
+async function runPowerShell(command: string | string[]): Promise<{ ok: boolean; error?: string }> {
   return await new Promise((resolveResult) => {
-    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command], { windowsHide: true });
+    const arguments_ = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", ...(typeof command === "string" ? ["-Command", command] : ["-File", ...command])];
+    const child = spawn("powershell.exe", arguments_, { windowsHide: true });
     let stderr = "";
     child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString("utf8")));
     child.on("error", (error) => resolveResult({ ok: false, error: error.message }));
@@ -477,7 +478,7 @@ async function runAction(action: string, context: RequestContext): Promise<{ ok:
   switch (action) {
     case "start": {
       if (await controllerStatus(paths)) return { ok: true, message: "Already running." };
-      const start = await runPowerShell(`Start-ScheduledTask -TaskName '${TASK_NAME}'`);
+      const start = await runPowerShell([join(projectRoot(), "scripts", "start-controller.ps1"), "-ConfigPath", context.configPath]);
       if (!start.ok) return { ok: false, message: `Could not start the task: ${start.error}` };
       for (let attempt = 0; attempt < 40; attempt += 1) {
         await sleep(500);

@@ -253,9 +253,11 @@ Recommended, so it survives reboots:
   task called `Alfred` that runs hidden at logon. It applies immediately and can be switched off
   the same way.
 - **Tray shortcut.** `npm run install-tray` (or `scripts/install-tray.ps1 -Startup`) puts an
-  **Alfred** shortcut on your Desktop and in Startup. The tray icon shows state at a glance:
+  **Alfred** shortcut on your Desktop; `-Startup` also adds it to the Startup folder. The tray icon shows state at a glance:
   green = idle, blue = working, orange = paused, grey = stopped. Right-click for Start, Stop,
   Restart, Pause, Resume, Open logs, Open config, Run doctor, Pair.
+
+The desktop shortcut and dashboard Start button also work when the sign-in task is not installed. They launch the controller hidden with your current configuration. Reopening the desktop shortcut keeps one tray icon and one running controller.
 
 The dashboard is also a normal local web app if you prefer a browser tab:
 `http://127.0.0.1:8787/?token=<your token>` — the token is in

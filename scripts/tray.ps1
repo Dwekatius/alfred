@@ -16,83 +16,7 @@ Add-Type -AssemblyName System.Drawing
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $ConfigPath = if ($env:PI_TG_CONFIG) { $env:PI_TG_CONFIG } else { Join-Path $env:USERPROFILE '.pi\alfred\config.json' }
-$TaskName = 'Alfred'
-
-function Get-DataRoot {
-  try {
-    $cfg = Get-Content $ConfigPath -Raw | ConvertFrom-Json
-    if ($cfg.dataRoot) { return $cfg.dataRoot }
-  } catch { }
-  return (Join-Path $env:USERPROFILE '.pi\alfred')
-}
-
-function Read-IpcInfo {
-  $infoPath = Join-Path (Get-DataRoot) 'state\local-ipc.json'
-  if (-not (Test-Path $infoPath)) { return $null }
-  try { return Get-Content $infoPath -Raw | ConvertFrom-Json } catch { return $null }
-}
-
-function Invoke-LocalIpc([string]$Command, [int]$TimeoutMs = 3000) {
-  $info = Read-IpcInfo
-  if (-not $info) { return $null }
-  $pipeName = $info.pipeName -replace '^\\\\\.\\pipe\\', ''
-  $pipe = $null
-  try {
-    $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', $pipeName, [System.IO.Pipes.PipeDirection]::InOut)
-    $pipe.Connect($TimeoutMs)
-    $writer = New-Object System.IO.StreamWriter($pipe)
-    $writer.AutoFlush = $true
-    $reader = New-Object System.IO.StreamReader($pipe)
-    $writer.WriteLine((@{ token = $info.token; command = $Command } | ConvertTo-Json -Compress))
-    $line = $reader.ReadLine()
-    if (-not $line) { return $null }
-    return $line | ConvertFrom-Json
-  } catch {
-    return $null
-  } finally {
-    if ($pipe) { $pipe.Dispose() }
-  }
-}
-
-function Get-AgentStatus {
-  # Skip the pipe entirely when no controller lock is present (fast "stopped").
-  $lockPath = Join-Path (Get-DataRoot) 'state\controller.lock'
-  $infoPath = Join-Path (Get-DataRoot) 'state\local-ipc.json'
-  if (-not (Test-Path $lockPath) -or -not (Test-Path $infoPath)) { return $null }
-  $response = Invoke-LocalIpc 'status' 800
-  if ($response -and $response.ok) { return $response.result }
-  return $null
-}
-
-function Start-Agent {
-  $status = Get-AgentStatus
-  if ($status) { return $true }
-  Start-ScheduledTask -TaskName $TaskName
-  for ($i = 0; $i -lt 30; $i += 1) {
-    Start-Sleep -Milliseconds 700
-    if (Get-AgentStatus) { return $true }
-  }
-  return $false
-}
-
-function Stop-Agent {
-  $status = Get-AgentStatus
-  if ($status) {
-    Invoke-LocalIpc 'shutdown' | Out-Null
-    for ($i = 0; $i -lt 20; $i += 1) {
-      Start-Sleep -Milliseconds 500
-      if (-not (Get-AgentStatus)) { break }
-    }
-  } else {
-    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-  }
-}
-
-function Restart-Agent {
-  Stop-Agent
-  Start-Sleep -Seconds 1
-  Start-Agent
-}
+. (Join-Path $PSScriptRoot 'controller-control.ps1')
 
 function New-TrayIcon([System.Drawing.Color]$Color) {
   $bitmap = New-Object System.Drawing.Bitmap 32, 32
@@ -150,13 +74,25 @@ if ($Action -ne 'tray') {
     'status' { Get-AgentStatus | ConvertTo-Json -Depth 6; exit 0 }
     'start' { if (Start-Agent) { 'started' } else { 'failed to start'; exit 1 } ; exit 0 }
     'stop' { Stop-Agent; 'stopped'; exit 0 }
-    'restart' { Restart-Agent | Out-Null; 'restarted'; exit 0 }
+    'restart' { if (Restart-Agent) { 'restarted'; exit 0 } else { 'failed to restart'; exit 1 } }
     'pause' { Invoke-LocalIpc 'pause' | ConvertTo-Json -Depth 6; exit 0 }
     'resume' { Invoke-LocalIpc 'resume' | ConvertTo-Json -Depth 6; exit 0 }
   }
 }
 
 # ---------------------------------------------------------------- tray mode
+
+# Reopening the desktop shortcut starts the agent but keeps one tray icon.
+$trayHash = [System.Security.Cryptography.SHA256]::Create()
+try {
+  $trayDigest = [BitConverter]::ToString($trayHash.ComputeHash([Text.Encoding]::UTF8.GetBytes((Get-DataRoot).ToLowerInvariant()))).Replace('-', '')
+} finally { $trayHash.Dispose() }
+$createdTray = $false
+$trayMutex = [System.Threading.Mutex]::new($true, "Local\AlfredTray-$trayDigest", [ref]$createdTray)
+if (-not $createdTray) {
+  try { if (-not $NoAutoStart) { Start-Agent | Out-Null } } finally { $trayMutex.Dispose() }
+  exit 0
+}
 
 $notify = New-Object System.Windows.Forms.NotifyIcon
 $notify.Text = 'Alfred'
@@ -236,6 +172,11 @@ if (-not $NoAutoStart) {
   }
 }
 
-[System.Windows.Forms.Application]::Run($context)
-$timer.Stop()
-$notify.Dispose()
+try {
+  [System.Windows.Forms.Application]::Run($context)
+} finally {
+  $timer.Stop()
+  $notify.Dispose()
+  $trayMutex.ReleaseMutex()
+  $trayMutex.Dispose()
+}
