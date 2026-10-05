@@ -13,6 +13,7 @@ import { Value } from "typebox/value";
 import { buildSystemPrompt } from "./prompt.js";
 import { productionToolNames, toolSpecByName, TOOL_SPECS } from "./tool-definitions.js";
 import { IPC_PROTOCOL_VERSION, parseSupervisorMessage, type SettledMessage, type StartJobMessage, type SteerMessage, type ToolResultMessage } from "../ipc.js";
+import { HistoricalImageProjection, measureContext } from "./context-projection.js";
 
 const jobContext = { jobId: "", leaseGeneration: 0 };
 let requestCounter = 0;
@@ -103,7 +104,7 @@ async function runJob(start: StartJobMessage): Promise<void> {
     allowModelNetwork: false,
   });
   // Provider keys stored with DPAPI by the setup wizard. Applied in memory only.
-  for (const entry of start.apiKeys ?? []) {
+  for (const entry of (start.apiKeys ?? []).filter((entry) => entry.provider === start.model.provider)) {
     try {
       await runtime.setRuntimeApiKey(entry.provider, entry.key);
     } catch (error) {
@@ -165,9 +166,21 @@ async function runJob(start: StartJobMessage): Promise<void> {
     fatal(`TOOLS_UNSUPPORTED: active tool mismatch (expected ${expected.join(",")}, got ${activeTools.join(",")}).`);
   }
 
+  const history = new HistoricalImageProjection(session.agent.state.messages, start.stripHistoricalToolImages ?? true);
+  const previousTransform = session.agent.transformContext;
+  let contextMetrics = { contextBytes: 0, imageCount: 0, imageBase64Bytes: 0 };
+  session.agent.transformContext = async (messages, signal) => {
+    const transformed = previousTransform ? await previousTransform(messages, signal) : messages;
+    const projected = history.apply(transformed);
+    contextMetrics = measureContext(projected);
+    return projected;
+  };
+
   let modelTurns = 0;
   let toolCalls = 0;
   let responseStartedAt = 0;
+  let turnStartedAt = 0;
+  let responseOpenedAt = 0;
   let firstDeltaAt = 0;
   let lastDeltaAt = 0;
   let settled = false;
@@ -176,18 +189,35 @@ async function runJob(start: StartJobMessage): Promise<void> {
     settledResolve = resolve;
   });
 
+  // Wrap the supported stream function; keep the SDK's auth/retries/streaming.
+  // message_start arrives only AFTER the HTTP response has opened.
+  const previousStream = session.agent.streamFunction;
+  session.agent.streamFunction = (model, context, options) => {
+    responseStartedAt = Date.now();
+    responseOpenedAt = 0;
+    firstDeltaAt = 0;
+    lastDeltaAt = 0;
+    return previousStream(model, context, options);
+  };
+
   const unsubscribe = session.subscribe((event) => {
     switch (event.type) {
+      case "turn_start":
+        turnStartedAt = Date.now();
+        return;
       case "message_start": {
         if ((event.message as { role?: string }).role === "assistant") {
-          responseStartedAt = Date.now();
-          firstDeltaAt = 0;
-          lastDeltaAt = 0;
+          responseOpenedAt = Date.now();
         }
         return;
       }
       case "message_update": {
         const streamEvent = event.assistantMessageEvent;
+        if ((streamEvent.type === "thinking_delta" || streamEvent.type === "text_delta" || streamEvent.type === "toolcall_delta") && streamEvent.delta) {
+          const now = Date.now();
+          if (firstDeltaAt === 0) firstDeltaAt = now;
+          lastDeltaAt = now;
+        }
         if (streamEvent.type === "start") {
           if (responseStartedAt === 0) responseStartedAt = Date.now();
         } else if (streamEvent.type === "thinking_delta" && streamEvent.delta) {
@@ -221,6 +251,8 @@ async function runJob(start: StartJobMessage): Promise<void> {
             const durationMs = responseStartedAt > 0 ? finishedAt - responseStartedAt : undefined;
             const ttftMs = responseStartedAt > 0 && firstDeltaAt > 0 ? firstDeltaAt - responseStartedAt : undefined;
             const streamMs = firstDeltaAt > 0 && lastDeltaAt > firstDeltaAt ? lastDeltaAt - firstDeltaAt : undefined;
+            const responseOpenMs = responseOpenedAt > 0 && responseStartedAt > 0 ? responseOpenedAt - responseStartedAt : undefined;
+            const preparationMs = turnStartedAt > 0 && responseStartedAt > 0 ? Math.max(0, responseStartedAt - turnStartedAt) : undefined;
             responseStartedAt = 0;
             firstDeltaAt = 0;
             lastDeltaAt = 0;
@@ -237,6 +269,9 @@ async function runJob(start: StartJobMessage): Promise<void> {
               ...(durationMs !== undefined ? { durationMs } : {}),
               ...(ttftMs !== undefined ? { ttftMs } : {}),
               ...(streamMs !== undefined ? { streamMs } : {}),
+              ...(responseOpenMs !== undefined ? { responseOpenMs } : {}),
+              ...(preparationMs !== undefined ? { preparationMs } : {}),
+              ...contextMetrics,
             });
           }
         }
@@ -332,17 +367,20 @@ async function handleSteer(session: Awaited<ReturnType<typeof createAgentSession
 }
 
 async function main(): Promise<void> {
-  const startPromise = new Promise<StartJobMessage>((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("start_job was not received within 30 seconds")), 30000);
-    process.on("message", (raw: unknown) => {
+  const startPromise = new Promise<StartJobMessage>((resolve) => {
+    const receiveStart = (raw: unknown) => {
       const message = parseSupervisorMessage(raw);
       if (!message) return;
       if (message.type === "start_job") {
-        clearTimeout(timeout);
+        process.off("message", receiveStart);
         resolve(message);
       }
-    });
+    };
+    process.on("message", receiveStart);
   });
+
+  // No job, credentials, session, tools or network requests exist while idle.
+  process.send?.({ protocolVersion: IPC_PROTOCOL_VERSION, type: "pool_ready", pid: process.pid });
 
   const start = await startPromise;
   await runJob(start);

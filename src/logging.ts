@@ -30,6 +30,7 @@ export interface LogFields {
 }
 
 const REDACTED = "[REDACTED]";
+const NUMERIC_METRICS = new Set(["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "reasoningTokens", "tokensPerSecond"]);
 
 const REDACTION_RULES: Array<{ re: RegExp; replacement: string }> = [
   // Telegram bot token: 123456789:AA... (inside URLs or standalone)
@@ -69,7 +70,9 @@ function redactValue(value: unknown, depth = 0): unknown {
     const out: Record<string, unknown> = {};
     const entries = Object.entries(value as Record<string, unknown>).slice(0, 60);
     for (const [k, v] of entries) {
-      if (/token|secret|password|authorization|api[_-]?key|credential/i.test(k)) {
+      if (NUMERIC_METRICS.has(k) && typeof v === "number" && Number.isFinite(v) && v >= 0) {
+        out[k] = v;
+      } else if (/token|secret|password|authorization|api[_-]?key|credential/i.test(k)) {
         out[k] = REDACTED;
       } else {
         out[k] = redactValue(v, depth + 1);

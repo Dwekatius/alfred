@@ -7,6 +7,18 @@
  */
 export const IPC_PROTOCOL_VERSION = 1;
 
+/** Process readiness is independent of job identity and grants no tool lease. */
+export interface PoolReadyMessage {
+  protocolVersion: number;
+  type: "pool_ready";
+  pid: number;
+}
+
+export function parsePoolReadyMessage(raw: unknown): PoolReadyMessage | undefined {
+  if (!isRecord(raw) || raw.protocolVersion !== IPC_PROTOCOL_VERSION || raw.type !== "pool_ready" || !Number.isSafeInteger(raw.pid) || (raw.pid as number) <= 0) return undefined;
+  return raw as unknown as PoolReadyMessage;
+}
+
 export interface Envelope {
   protocolVersion: number;
   jobId: string;
@@ -27,6 +39,7 @@ export interface StartJobMessage extends Envelope {
   images: Array<{ data: string; mimeType: string }>;
   /** Provider keys decrypted by the supervisor; never written to disk by the worker. */
   apiKeys?: Array<{ provider: string; key: string }>;
+  stripHistoricalToolImages?: boolean;
   limits: {
     maxToolCalls: number;
     maxModelTurns: number;
@@ -106,6 +119,13 @@ export interface ModelUsageMessage extends Envelope {
   ttftMs?: number;
   /** Time between the first and last streamed token (the decode window). */
   streamMs?: number;
+  /** Request entry to response opening; includes provider setup/upload/queue. */
+  responseOpenMs?: number;
+  preparationMs?: number;
+  /** SDK projection sizes, not HTTP wire sizes. */
+  contextBytes?: number;
+  imageCount?: number;
+  imageBase64Bytes?: number;
 }
 
 export interface UsageMessage extends Envelope {
@@ -169,6 +189,7 @@ export function parseWorkerMessage(raw: unknown): WorkerToSupervisorMessage | un
       return typeof raw.streamKind === "string" && typeof raw.text === "string" ? (raw as unknown as StreamMessage) : undefined;
     case "model_usage":
       return typeof raw.provider === "string" && typeof raw.model === "string" && typeof raw.inputTokens === "number" && typeof raw.outputTokens === "number"
+        && ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "reasoningTokens", "costUsd", "durationMs", "ttftMs", "streamMs", "responseOpenMs", "preparationMs", "contextBytes", "imageCount", "imageBase64Bytes"].every((key) => raw[key] === undefined || (typeof raw[key] === "number" && Number.isFinite(raw[key]) && (raw[key] as number) >= 0))
         ? (raw as unknown as ModelUsageMessage)
         : undefined;
     case "usage":

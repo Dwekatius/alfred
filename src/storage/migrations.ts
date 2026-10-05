@@ -230,6 +230,20 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX idx_stream_events_updated ON stream_events(updated_at);
     `,
   },
+  {
+    version: 6,
+    name: "request performance metrics",
+    sql: `
+      ALTER TABLE usage_events ADD COLUMN duration_ms INTEGER;
+      ALTER TABLE usage_events ADD COLUMN ttft_ms INTEGER;
+      ALTER TABLE usage_events ADD COLUMN stream_ms INTEGER;
+      ALTER TABLE usage_events ADD COLUMN response_open_ms INTEGER;
+      ALTER TABLE usage_events ADD COLUMN preparation_ms INTEGER;
+      ALTER TABLE usage_events ADD COLUMN context_bytes INTEGER;
+      ALTER TABLE usage_events ADD COLUMN image_count INTEGER;
+      ALTER TABLE usage_events ADD COLUMN image_base64_bytes INTEGER;
+    `,
+  },
 ];
 
 export function runMigrations(db: Database): number {

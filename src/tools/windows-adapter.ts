@@ -15,6 +15,30 @@ import type { BrokerContext, ToolBroker } from "./broker.js";
 import type { DesktopLease } from "./desktop-lease.js";
 import type { WindowsBackend } from "./windows-mcp.js";
 import type { McpContentBlock } from "./mcp-client.js";
+import type { ToolResultPayload } from "../ipc.js";
+
+export interface ObserveArgs {
+  scope?: "desktop" | "window" | "region";
+  windowId?: string;
+  region?: { x: number; y: number; width: number; height: number };
+  annotate?: boolean;
+  includeUiTree?: boolean;
+}
+
+export interface WaitArgs {
+  condition: "time" | "window" | "element";
+  ms?: number;
+  windowId?: string;
+  text?: string;
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+}
+
+interface AfterActionArgs {
+  observeAfter?: boolean;
+  observation?: ObserveArgs;
+  waitFor?: WaitArgs;
+}
 
 export interface DesktopToolDeps {
   windows: WindowsBackend;
@@ -222,6 +246,50 @@ export class DesktopTools {
     }
   }
 
+  private validateObservationArgs(args: ObserveArgs): void {
+    if (args.scope === "region" && !args.region) throw new AgentToolError({ code: "VALIDATION_ERROR", message: "region is required for scope=region.", retryable: false, actionOutcome: "not_started" });
+    if (args.windowId && !this.windowRegistry.has(args.windowId)) throw new AgentToolError({ code: "TARGET_NOT_FOUND", message: `Unknown window ${args.windowId}. Call desktop_windows or desktop_observe first.`, retryable: true, actionOutcome: "not_started" });
+  }
+
+  observationResult(result: Awaited<ReturnType<DesktopTools["observe"]>>, prefix = ""): ToolResultPayload {
+    const { observation, text, image } = result;
+    const content: ToolResultPayload["content"] = [{ type: "text", text: `${prefix ? `${prefix}\n\n` : ""}${this.buildObservationText(observation, text)}` }];
+    if (image) content.push({ type: "image", ...image });
+    return { content, details: { observationId: observation.id, artifactId: observation.artifactId, captureBounds: observation.captureBounds, imageSize: { width: observation.imageWidth, height: observation.imageHeight } } };
+  }
+
+  /** Hold the mutex once for action -> readiness -> capture, without reentry. */
+  async actAndObserve(args: AfterActionArgs, context: BrokerContext, action: (context: BrokerContext) => Promise<string>): Promise<ToolResultPayload> {
+    if (args.waitFor) this.validateWaitArgs(args.waitFor);
+    if (args.observeAfter !== false) this.validateObservationArgs(args.observation ?? {});
+    return await context.runExclusive(async () => {
+      // The primitives still recheck the lease between atomic steps. Only their
+      // mutex acquisition is bypassed, since we already own this exact mutex.
+      const unlocked: BrokerContext = { ...context, runExclusive: async (fn) => { context.assertLease(); return await fn(); } };
+      let completed = false;
+      try {
+        context.assertLease();
+        const outcome = await action(unlocked);
+        completed = true;
+        context.assertLease();
+        const readiness = args.waitFor ? await this.wait(args.waitFor, unlocked) : "";
+        context.assertLease();
+        if (args.observeAfter === false) return { content: [{ type: "text", text: `${outcome}${readiness ? `\n${readiness}` : ""}\nNo verification screen requested. Observe before further desktop input.` }], details: { actionOutcome: "completed" } };
+        const result = this.observationResult(await this.observe(args.observation ?? {}, unlocked), `${outcome}${readiness ? `\n${readiness}` : ""}`);
+        result.details = { ...result.details, actionOutcome: "completed" };
+        return result;
+      } catch (error) {
+        if (!completed) {
+          const failure = AgentToolError.from(error, "BACKEND_ERROR", "unknown");
+          if (failure.actionOutcome !== "not_started") this.invalidateObservations(context.jobId);
+          throw failure;
+        }
+        const failure = AgentToolError.from(error);
+        throw new AgentToolError({ ...failure.toData(), retryable: false, actionOutcome: "completed", message: `The action completed, but verification did not finish: ${failure.message} Do not repeat the action. Re-observe to check its result.` });
+      }
+    });
+  }
+
   private getObservation(jobId: string, observationId: string): Observation {
     const observation = this.observations.get(observationId);
     if (!observation || observation.jobId !== jobId) {
@@ -304,8 +372,8 @@ export class DesktopTools {
     return { text, image: imageBlock?.data ? { data: imageBlock.data, mimeType: imageBlock.mimeType ?? "image/png" } : undefined };
   }
 
-  async observe(args: { scope?: "desktop" | "window" | "region"; windowId?: string; region?: { x: number; y: number; width: number; height: number }; annotate?: boolean; includeUiTree?: boolean }, context: BrokerContext, interactionMode: "model" | "clean" = "model"): Promise<{ observation: Observation; text: string; image?: { data: string; mimeType: string } }> {
-    await this.assertDesktopAvailable();
+  async observe(args: ObserveArgs, context: BrokerContext, interactionMode: "model" | "clean" = "model"): Promise<{ observation: Observation; text: string; image?: { data: string; mimeType: string } }> {
+    this.validateObservationArgs(args);
     const scope = args.scope ?? "desktop";
     const snapshotArgs: Record<string, unknown> = {};
     if (scope === "region" && args.region) {
@@ -313,6 +381,17 @@ export class DesktopTools {
     }
     return await context.runExclusive(async () => {
       context.assertLease();
+      await this.assertDesktopAvailable();
+      let requestedWindow: string | undefined;
+      if (scope === "window") {
+        const knownWindow = args.windowId ? this.windowRegistry.get(args.windowId) : undefined;
+        const window = knownWindow ? await this.deps.windows.helper.windowInfo(knownWindow.handle) : await this.deps.windows.helper.foregroundWindow();
+        if (!window.handle || !window.rect || window.rect.width <= 0 || window.rect.height <= 0 || ("minimized" in window && window.minimized)) {
+          throw new AgentToolError({ code: "TARGET_NOT_FOUND", message: "The requested window has no visible capture bounds.", retryable: true, actionOutcome: "not_started" });
+        }
+        requestedWindow = normalizeHandle(window.handle);
+        snapshotArgs.region = [window.rect.left, window.rect.top, window.rect.right, window.rect.bottom];
+      }
       const { text, image } = await this.snapshot(snapshotArgs, {
         signal: context.signal,
         includeUiTree: args.includeUiTree ?? interactionMode === "model",
@@ -320,10 +399,22 @@ export class DesktopTools {
         annotate: interactionMode === "model" ? (args.annotate ?? true) : false,
       });
       const parsed = parseSnapshotText(text);
+      // A window may move or close while the backend captures it. Never expose
+      // actionable coordinates from a crop whose window geometry changed.
+      if (requestedWindow) {
+        const current = await this.deps.windows.helper.windowInfo(requestedWindow);
+        const bounds = snapshotArgs.region as number[];
+        if (!current.rect || [current.rect.left, current.rect.top, current.rect.right, current.rect.bottom].some((value, index) => value !== bounds[index])) {
+          throw new AgentToolError({ code: "STALE_OBSERVATION", message: "The window moved during capture. Observe again.", retryable: true, actionOutcome: "not_started" });
+        }
+      }
       const monitors = await this.deps.windows.helper.monitors();
       let captureBounds: { left: number; top: number; width: number; height: number };
       if (parsed.region) {
         captureBounds = { left: parsed.region.left, top: parsed.region.top, width: parsed.region.right - parsed.region.left, height: parsed.region.bottom - parsed.region.top };
+      } else if (snapshotArgs.region) {
+        const [left, top, right, bottom] = snapshotArgs.region as [number, number, number, number];
+        captureBounds = { left, top, width: right - left, height: bottom - top };
       } else {
         const union = unionDisplays(parsed.displays, parsed.selectedDisplays) ?? { left: 0, top: 0, width: parsed.originalSize?.width ?? 0, height: parsed.originalSize?.height ?? 0 };
         captureBounds = union;
@@ -342,6 +433,7 @@ export class DesktopTools {
       }
       const artifact = context.artifacts.register({
         jobId: context.jobId,
+        conversationId: context.repo.getJob(context.jobId)?.conversation_id,
         kind: interactionMode === "model" ? "observation" : "screenshot",
         mime: "image/png",
         filename: `observation-${Date.now()}.png`,
@@ -392,7 +484,7 @@ export class DesktopTools {
   buildObservationText(observation: Observation, parsedText: string, maxChars = 6000): string {
     const elementLines = [...observation.elements.values()]
       .slice(0, 120)
-      .map((element) => `${element.ref} (${element.x},${element.y}) ${element.controlType} "${element.name}"${element.focused ? " [focused]" : ""}${element.password ? " [password]" : ""}${element.action ? ` [action: ${element.action}]` : ""}`)
+      .map((element) => `${element.ref} (${element.x},${element.y}) ${element.controlType} "${element.name}"${element.focused ? " [focused]" : ""}${element.password ? " [password]" : ""}${element.action ? ` [action: ${element.action}]` : ""}${element.value && !element.password ? ` value:${JSON.stringify(element.value)}` : ""}`)
       .join("\n");
     const header = [
       `observationId: ${observation.id}`,
@@ -404,7 +496,10 @@ export class DesktopTools {
       `imageSize: ${observation.imageWidth}x${observation.imageHeight}`,
       `windows: ${observation.windows.map((window) => `${window.windowId} "${window.name}"`).join("; ") || "none"}`,
     ].join("\n");
-    const trimmedText = parsedText.length > maxChars ? `${parsedText.slice(0, maxChars)}\n[metadata truncated]` : parsedText;
+    // Keep backend evidence which is not already represented by elementRefs.
+    // A no-elements UI tree may still contain useful noninteractive text.
+    const concise = observation.elements.size > 0 ? parseSnapshotText(parsedText).rawText.split(/\r?\n/u).filter((line) => !ELEMENT_LINE.test(line)).join("\n") : parsedText;
+    const trimmedText = concise.length > maxChars ? `${concise.slice(0, maxChars)}\n[metadata truncated]` : concise;
     return `${header}\n\nelementRefs:\n${elementLines || "(no interactive elements captured)"}\n\nbackendMetadata:\n${trimmedText}`;
   }
 
@@ -434,6 +529,7 @@ export class DesktopTools {
       await this.assertTargetStillValid(observation);
       const target = this.resolveTarget(observation, args.target);
       await this.callTool("Move", { loc: [target.x, target.y] }, { signal: context.signal, timeoutMs: this.deps.config.desktop.nativeToolTimeoutMs });
+      this.invalidateObservations(context.jobId);
       return `Moved pointer to (${target.x},${target.y}).`;
     });
   }
@@ -467,12 +563,15 @@ export class DesktopTools {
         await this.callTool("Click", { loc: [target.x, target.y], button: "left", clicks: 1 }, { signal: context.signal, timeoutMs: this.deps.config.desktop.nativeToolTimeoutMs });
       }
       if (args.mode === "replace") {
+        context.assertLease();
         await this.callTool("Shortcut", { shortcut: "ctrl+a" }, { signal: context.signal, timeoutMs: this.deps.config.desktop.nativeToolTimeoutMs });
       } else {
+        context.assertLease();
         // Append: move the caret to the end of the existing content first.
         await this.callTool("Shortcut", { shortcut: "ctrl+end" }, { signal: context.signal, timeoutMs: this.deps.config.desktop.nativeToolTimeoutMs });
       }
       // Native Unicode typing into the focused control: no click, no layout drift.
+      context.assertLease();
       await this.deps.windows.helper.typeText(args.text);
       this.invalidateObservations(context.jobId);
       return `Typed ${JSON.stringify(args.text.slice(0, 80))}${args.mode === "replace" ? " after selecting existing text" : ""}.`;
@@ -481,14 +580,16 @@ export class DesktopTools {
 
   async key(args: { keys: string; observationId?: string; holdMs?: number; repeat?: number }, context: BrokerContext): Promise<string> {
     await this.assertDesktopAvailable();
-    if (args.observationId) this.getObservation(context.jobId, args.observationId);
+    const observation = args.observationId ? this.getObservation(context.jobId, args.observationId) : undefined;
     return await context.runExclusive(async () => {
       context.assertLease();
+      if (observation) await this.assertTargetStillValid(observation);
       if (args.holdMs && args.holdMs > 0) {
         await this.deps.windows.helper.keyHold(args.keys, Math.min(args.holdMs, 10000));
       } else {
         const times = Math.min(args.repeat ?? 1, 50);
         for (let index = 0; index < times; index += 1) {
+          context.assertLease();
           if (context.signal.aborted) throw new AgentToolError({ code: "CANCELLED", message: "Cancelled between key presses.", retryable: false, actionOutcome: "unknown" });
           await this.callTool("Shortcut", { shortcut: args.keys }, { signal: context.signal, timeoutMs: this.deps.config.desktop.nativeToolTimeoutMs });
         }
@@ -520,10 +621,8 @@ export class DesktopTools {
     await this.assertDesktopAvailable();
     return await context.runExclusive(async () => {
       context.assertLease();
-      const { text } = await this.snapshot({}, { signal: context.signal, includeUiTree: false, useVision: false, annotate: false });
-      const parsed = parseSnapshotText(text);
-      const windows = includeMinimized ? [...parsed.windows, ...(parsed.focusedWindow ? [parsed.focusedWindow] : [])] : parsed.windows;
-      const unique = new Map(windows.map((window) => [window.windowId, window]));
+      const windows = await this.normalWindows(context.signal);
+      const unique = new Map(windows.filter((window) => includeMinimized || window.status !== "Minimized").map((window) => [window.windowId, window]));
       for (const window of unique.values()) this.windowRegistry.set(window.windowId, window);
       const lines = [...unique.values()].map((window) => `${window.windowId} "${window.name}" ${window.width}x${window.height} status=${window.status}`);
       return { text: lines.join("\n") || "No windows found.", windows: [...unique.values()] };
@@ -585,21 +684,57 @@ export class DesktopTools {
     });
   }
 
-  async wait(args: { condition: "time" | "window" | "element"; ms?: number; windowId?: string; text?: string; timeoutMs?: number }, context: BrokerContext): Promise<string> {
+  private validateWaitArgs(args: WaitArgs): void {
+    if (args.condition === "time" && args.ms === undefined) throw new AgentToolError({ code: "VALIDATION_ERROR", message: "Fixed waits require explicit ms. Prefer a window or element condition.", retryable: false, actionOutcome: "not_started" });
+    if (args.condition === "element" && !args.text?.trim()) throw new AgentToolError({ code: "VALIDATION_ERROR", message: "Element waits require text.", retryable: false, actionOutcome: "not_started" });
+    if (args.condition === "window" && !args.windowId && !args.text?.trim()) throw new AgentToolError({ code: "VALIDATION_ERROR", message: "Window waits require a title in text or a known windowId.", retryable: false, actionOutcome: "not_started" });
+    if (args.windowId && !this.windowRegistry.has(args.windowId)) throw new AgentToolError({ code: "TARGET_NOT_FOUND", message: `Unknown window ${args.windowId}.`, retryable: true, actionOutcome: "not_started" });
+  }
+
+  private async normalWindows(signal: AbortSignal, timeoutMs?: number): Promise<ParsedWindow[]> {
+    const windows = await this.deps.windows.helper.windowsList({ signal, timeoutMs });
+    return windows.filter((window) => window.handle && window.rect).map((window) => ({ windowId: `W:${normalizeHandle(window.handle!)}`, handle: normalizeHandle(window.handle!), name: window.title ?? "", width: window.rect!.width, height: window.rect!.height, status: window.minimized ? "Minimized" : "Normal" }));
+  }
+
+  async wait(args: WaitArgs, context: BrokerContext): Promise<string> {
+    this.validateWaitArgs(args);
     if (args.condition === "time") {
-      const ms = Math.min(args.ms ?? 1000, 30000);
+      context.assertLease();
+      const ms = Math.min(args.ms ?? 0, 30000);
       await cancellableSleep(ms, context.signal);
       return `Waited ${ms}ms.`;
     }
     const timeoutMs = Math.min(args.timeoutMs ?? 10000, 120000);
-    const windowName = args.windowId ? this.windowRegistry.get(args.windowId)?.name : undefined;
-    const condition = args.condition === "window" ? "active_window" : "element_exists";
-    const result = await this.callTool(
-      "WaitFor",
-      { condition, ...(windowName ? { window_name: windowName } : {}), ...(args.text ? { text: args.text } : {}), timeout: timeoutMs / 1000 },
-      { signal: context.signal, timeoutMs: timeoutMs + 5000 },
-    );
-    return result.content.find((block) => block.type === "text")?.text ?? "Wait condition satisfied.";
+    const startedAt = Date.now();
+    const deadline = startedAt + timeoutMs;
+    const needle = args.text?.trim().toLowerCase();
+    const expectedHandle = args.windowId ? this.windowRegistry.get(args.windowId)?.handle : undefined;
+    do {
+      context.assertLease();
+      const ready = await context.runExclusive(async () => {
+        context.assertLease();
+        await this.assertDesktopAvailable();
+        const remaining = Math.max(1, deadline - Date.now());
+        if (args.condition === "window") {
+          const windows = await this.normalWindows(context.signal, remaining);
+          return windows.some((window) => window.status !== "Minimized" && (!expectedHandle || normalizeHandle(window.handle) === normalizeHandle(expectedHandle)) && (!needle || window.name.toLowerCase().includes(needle)));
+        }
+        const result = await this.snapshot({}, { signal: AbortSignal.any([context.signal, AbortSignal.timeout(remaining)]), includeUiTree: true, useVision: false, annotate: false });
+        const parsed = parseSnapshotText(result.text);
+        // Match UI evidence only, never a title/metadata line masquerading as an element.
+        const tree = parsed.rawText.split("UI Tree:")[1] ?? "";
+        return tree.toLowerCase().includes(needle!);
+      }).catch((error: unknown) => {
+        if (context.signal.aborted) throw new AgentToolError({ code: "CANCELLED", message: "Readiness wait cancelled.", retryable: false, actionOutcome: "not_started" });
+        if (!context.signal.aborted && Date.now() >= deadline) throw new AgentToolError({ code: "TOOL_TIMEOUT", message: `Readiness condition was not observed within ${timeoutMs}ms.`, retryable: true, actionOutcome: "not_started" });
+        throw error;
+      });
+      if (ready) return `Condition ${args.condition} satisfied after ${Date.now() - startedAt}ms.`;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await cancellableSleep(Math.min(args.pollIntervalMs ?? 200, remaining), context.signal);
+    } while (Date.now() < deadline);
+    throw new AgentToolError({ code: "TOOL_TIMEOUT", message: `Readiness condition was not observed within ${timeoutMs}ms.`, retryable: true, actionOutcome: "not_started" });
   }
 
   private focusedOrCursorTarget(observation: Observation): { x: number; y: number; element?: ParsedElement } {
@@ -611,13 +746,20 @@ export class DesktopTools {
 
   /** Call the backend and convert error results into structured tool errors. */
   private async callTool(tool: string, args: Record<string, unknown>, options: { signal?: AbortSignal; timeoutMs?: number }): Promise<{ content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>; isError: boolean }> {
-    const result = await this.deps.windows.mcp.callTool(tool, args, options);
+    options.signal?.throwIfAborted();
+    const mutation = ["Click", "Move", "Scroll", "Shortcut", "App", "Type"].includes(tool);
+    let result;
+    try {
+      result = await this.deps.windows.mcp.callTool(tool, args, options);
+    } catch (error) {
+      throw AgentToolError.from(error, "BACKEND_ERROR", mutation ? "unknown" : "not_started");
+    }
     if (result.isError) {
       const text = result.content
         .filter((block) => block.type === "text")
         .map((block) => block.text ?? "")
         .join("\n");
-      throw new AgentToolError({ code: "BACKEND_ERROR", message: (text || `${tool} failed`).slice(0, 400), retryable: true, actionOutcome: "not_started" });
+      throw new AgentToolError({ code: "BACKEND_ERROR", message: (text || `${tool} failed`).slice(0, 400), retryable: !mutation, actionOutcome: mutation ? "unknown" : "not_started" });
     }
     return result as { content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>; isError: boolean };
   }
@@ -653,29 +795,24 @@ function cancellableSleep(ms: number, signal: AbortSignal): Promise<void> {
 
 export function installDesktopTools(broker: ToolBroker, deps: DesktopToolDeps): DesktopTools {
   const tools = new DesktopTools(deps);
+  const action = (method: "click" | "move" | "drag" | "type" | "key" | "scroll" | "app") => async (args: unknown, context: BrokerContext) => tools.actAndObserve(args as AfterActionArgs, context, (unlocked) => tools[method](args as never, unlocked));
   broker.registerHandlers({
     desktop_observe: async (args, context) => {
-      const parsed = args as { scope?: "desktop" | "window" | "region"; windowId?: string; region?: { x: number; y: number; width: number; height: number }; annotate?: boolean; includeUiTree?: boolean };
-      const { observation, text, image } = await tools.observe(parsed, context, "model");
-      const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [
-        { type: "text", text: tools.buildObservationText(observation, text) },
-      ];
-      if (image) content.push({ type: "image", data: image.data, mimeType: image.mimeType });
-      return { content, details: { observationId: observation.id, artifactId: observation.artifactId, captureBounds: observation.captureBounds, imageSize: { width: observation.imageWidth, height: observation.imageHeight } } };
+      return tools.observationResult(await tools.observe(args as ObserveArgs, context, "model"));
     },
-    desktop_click: async (args, context) => ({ content: [{ type: "text", text: await tools.click(args as never, context) }], details: {} }),
-    desktop_move: async (args, context) => ({ content: [{ type: "text", text: await tools.move(args as never, context) }], details: {} }),
-    desktop_drag: async (args, context) => ({ content: [{ type: "text", text: await tools.drag(args as never, context) }], details: {} }),
-    desktop_type: async (args, context) => ({ content: [{ type: "text", text: await tools.type(args as never, context) }], details: {} }),
-    desktop_key: async (args, context) => ({ content: [{ type: "text", text: await tools.key(args as never, context) }], details: {} }),
-    desktop_scroll: async (args, context) => ({ content: [{ type: "text", text: await tools.scroll(args as never, context) }], details: {} }),
+    desktop_click: action("click"),
+    desktop_move: action("move"),
+    desktop_drag: action("drag"),
+    desktop_type: action("type"),
+    desktop_key: action("key"),
+    desktop_scroll: action("scroll"),
     desktop_windows: async (args, context) => {
       const { text } = await tools.listWindows(context, (args as { includeMinimized?: boolean }).includeMinimized ?? false);
       return { content: [{ type: "text", text }], details: {} };
     },
-    desktop_app: async (args, context) => ({ content: [{ type: "text", text: await tools.app(args as never, context) }], details: {} }),
+    desktop_app: action("app"),
     desktop_clipboard: async (args, context) => ({ content: [{ type: "text", text: await tools.clipboard(args as never, context) }], details: {} }),
-    desktop_wait: async (args, context) => ({ content: [{ type: "text", text: await tools.wait(args as never, context) }], details: {} }),
+    desktop_wait: async (args, context) => tools.actAndObserve(args as AfterActionArgs, context, (unlocked) => tools.wait(args as WaitArgs, unlocked)),
   });
   return tools;
 }

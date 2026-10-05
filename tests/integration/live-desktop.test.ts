@@ -105,28 +105,30 @@ test("live native input types into Notepad and saves", { skip: !(enabled && full
     const file = join(s.paths.workRoot, "desktop-smoke.txt");
     writeFileSync(file, "start-marker\n", "utf8");
 
-    const launch = await s.broker.execute(request(s, "desktop_app", { action: "launch", executable: "C:\\Windows\\System32\\notepad.exe", args: [file] }, "r-launch"));
+    const observation = { scope: "window", includeUiTree: true, annotate: false };
+    const started = Date.now();
+    const launch = await s.broker.execute(request(s, "desktop_app", { action: "launch", executable: "C:\\Windows\\System32\\notepad.exe", args: [file], waitFor: { condition: "window", text: "desktop-smoke", timeoutMs: 15000 }, observation }, "r-launch"));
     assert.equal(launch.ok, true, JSON.stringify(launch));
 
-    // Give Notepad time to appear, then observe and type at the focused editor.
-    await new Promise((resolve) => setTimeout(resolve, 2500));
-    const observe = await s.broker.execute(request(s, "desktop_observe", { scope: "desktop", includeUiTree: true, annotate: false }, "r-observe"));
-    assert.equal(observe.ok, true, JSON.stringify(observe));
-    const observationId = observe.ok ? (observe.result.details?.observationId as string) : undefined;
+    // The launch already returns verified window evidence: no extra observation.
+    const observationId = launch.ok ? (launch.result.details?.observationId as string) : undefined;
     assert.ok(observationId);
 
-    const typed = await s.broker.execute(request(s, "desktop_type", { observationId, text: "typed-by-pi-42", mode: "append" }, "r-type"));
+    const typed = await s.broker.execute(request(s, "desktop_type", { observationId, text: "typed-by-pi-42", mode: "append", observation }, "r-type"));
     assert.equal(typed.ok, true, JSON.stringify(typed));
 
-    // Typing invalidates the observation by design: save with a key-only action.
-    const saved = await s.broker.execute(request(s, "desktop_key", { keys: "ctrl+s" }, "r-save"));
+    const typedId = typed.ok ? typed.result.details?.observationId as string : undefined;
+    assert.ok(typedId && typedId !== observationId, "typing returns a fresh observation");
+    const saved = await s.broker.execute(request(s, "desktop_key", { keys: "ctrl+s", observationId: typedId, observation }, "r-save"));
     assert.equal(saved.ok, true, JSON.stringify(saved));
-    await new Promise((resolve) => setTimeout(resolve, 800));
+    const deadline = Date.now() + 3000;
+    while (!readFileSync(file, "utf8").includes("typed-by-pi-42") && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100));
     const content = readFileSync(file, "utf8");
     assert.match(content, /typed-by-pi-42/);
+    console.log(`verified launch/type/save in ${Date.now() - started}ms, three compound calls`);
 
     // Close the Notepad tab we used (already saved, so no prompt).
-    await s.broker.execute(request(s, "desktop_key", { keys: "ctrl+w" }, "r-close"));
+    await s.broker.execute(request(s, "desktop_key", { keys: "ctrl+w", observeAfter: false }, "r-close"));
   } finally {
     await s.windows.dispose().catch(() => undefined);
     s.db.close();

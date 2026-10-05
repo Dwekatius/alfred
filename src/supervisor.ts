@@ -156,9 +156,8 @@ export class Supervisor {
   }
 
   /** Load user-provided provider keys from DPAPI for the next worker. */
-  async resolveApiKeys(): Promise<Array<{ provider: string; key: string }>> {
-    const providers = new Set<string>(["deepseek", "openrouter"]);
-    for (const slot of Object.values(this.config.models.slots)) providers.add(slot.provider);
+  async resolveApiKeys(selectedProvider?: string): Promise<Array<{ provider: string; key: string }>> {
+    const providers = new Set<string>(selectedProvider ? [selectedProvider] : ["deepseek", "openrouter", ...Object.values(this.config.models.slots).map((slot) => slot.provider)]);
     const keys: Array<{ provider: string; key: string }> = [];
     for (const provider of providers) {
       try {
@@ -1213,9 +1212,9 @@ export class Supervisor {
     try {
       this.db
         .prepare(
-          "INSERT INTO usage_events(timestamp, job_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, cost_usd) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          "INSERT INTO usage_events(timestamp, job_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, cost_usd, duration_ms, ttft_ms, stream_ms, response_open_ms, preparation_ms, context_bytes, image_count, image_base64_bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .run(new Date().toISOString(), jobId, usage.provider, usage.model, usage.inputTokens, usage.outputTokens, usage.cacheReadTokens, usage.cacheWriteTokens, usage.reasoningTokens, usage.costUsd);
+        .run(new Date().toISOString(), jobId, usage.provider, usage.model, usage.inputTokens, usage.outputTokens, usage.cacheReadTokens, usage.cacheWriteTokens, usage.reasoningTokens, usage.costUsd, usage.durationMs ?? null, usage.ttftMs ?? null, usage.streamMs ?? null, usage.responseOpenMs ?? null, usage.preparationMs ?? null, usage.contextBytes ?? null, usage.imageCount ?? null, usage.imageBase64Bytes ?? null);
       const wallSeconds = usage.durationMs && usage.durationMs > 0 ? usage.durationMs / 1000 : undefined;
       // Decode throughput excludes queueing/prefill/network: the streaming window only.
       const decodeSeconds = usage.streamMs && usage.streamMs > 0 ? usage.streamMs / 1000 : wallSeconds;
@@ -1227,6 +1226,12 @@ export class Supervisor {
         model: `${usage.provider}/${usage.model}`,
         inputTokens: usage.inputTokens,
         outputTokens: usage.outputTokens,
+        reasoningTokens: usage.reasoningTokens,
+        contextBytes: usage.contextBytes,
+        imageCount: usage.imageCount,
+        imageBase64Bytes: usage.imageBase64Bytes,
+        responseOpenMs: usage.responseOpenMs,
+        preparationMs: usage.preparationMs,
         costUsd: usage.costUsd,
         ...(usage.durationMs !== undefined ? { durationMs: usage.durationMs } : {}),
         ...(usage.ttftMs !== undefined ? { ttftMs: usage.ttftMs } : {}),

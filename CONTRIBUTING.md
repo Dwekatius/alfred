@@ -40,7 +40,7 @@ Never commit `.venv`, `node_modules`, `dist`, real config files, or anything und
 ## Tests
 
 ```powershell
-npm test            # build + unit + integration (68 tests; 6 skipped by default)
+npm test            # build + unit + integration (live tests skipped by default)
 npm run test:unit
 npm run typecheck
 ```

@@ -56,15 +56,27 @@ export function CreateBrowserBackend(options: { config: AppConfig; paths: DataPa
     manifestPath: join(options.paths.manifestsDir, "playwright-mcp-tools.json"),
     defaultTimeoutMs: 60000,
   });
+  const dispose = () => closeBrowserBackend(mcp, options.logger);
   return {
     mcp,
     ensureStarted: () => mcp.ensureStarted(),
     call: (tool, toolArgs, callOptions) => mcp.callTool(tool, toolArgs, callOptions),
     listTools: () => mcp.listTools(),
-    restart: () => mcp.restart(),
-    dispose: () => mcp.dispose(),
+    restart: async () => { await dispose(); await mcp.ensureStarted(); },
+    dispose,
     isStarted: () => mcp.isStarted(),
   };
+}
+
+/** Flush the persistent profile before terminating its MCP process. */
+export async function closeBrowserBackend(mcp: Pick<McpStdioBackend, "isStarted" | "callTool" | "dispose">, logger: Logger): Promise<void> {
+  try {
+    if (mcp.isStarted()) await mcp.callTool("browser_close", {}, { timeoutMs: 5000 });
+  } catch (error) {
+    logger.debug("browser.close_failed", "Graceful browser close failed; closing its transport.", { detail: (error as Error).message });
+  } finally {
+    await mcp.dispose();
+  }
 }
 
 /** Absolute path helper for browser output-dir files. */

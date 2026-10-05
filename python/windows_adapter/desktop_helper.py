@@ -127,9 +127,9 @@ def monitors() -> dict:
     return {"monitors": result}
 
 
-def foreground_window() -> dict:
-    hwnd = user32.GetForegroundWindow()
-    if not hwnd:
+def window_info(handle: int) -> dict:
+    hwnd = wt.HWND(handle)
+    if not user32.IsWindow(hwnd):
         return {"handle": None}
     length = user32.GetWindowTextLengthW(hwnd)
     buf = ctypes.create_unicode_buffer(length + 1)
@@ -137,13 +137,36 @@ def foreground_window() -> dict:
     pid = wt.DWORD(0)
     user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
     rect = RECT()
-    user32.GetWindowRect(hwnd, ctypes.byref(rect))
+    if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return {"handle": hex(handle)}
     return {
-        "handle": hex(hwnd),
-        "title": buf.value,
-        "pid": pid.value,
+        "handle": hex(handle), "title": buf.value, "pid": pid.value,
+        "visible": bool(user32.IsWindowVisible(hwnd)), "minimized": bool(user32.IsIconic(hwnd)),
         "rect": {"left": rect.left, "top": rect.top, "right": rect.right, "bottom": rect.bottom, "width": rect.right - rect.left, "height": rect.bottom - rect.top},
     }
+
+
+def foreground_window() -> dict:
+    user32.GetForegroundWindow.restype = wt.HWND
+    hwnd = user32.GetForegroundWindow()
+    if not hwnd:
+        return {"handle": None}
+    return window_info(hwnd)
+
+
+def windows_list() -> dict:
+    """Cheap normal-window enumeration, without accessibility trees/images."""
+    result = []
+    enum_proc = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+
+    def callback(hwnd, _lparam):
+        info = window_info(hwnd)
+        if info.get("visible") and info.get("title") and info.get("rect"):
+            result.append(info)
+        return True
+
+    user32.EnumWindows(enum_proc(callback), 0)
+    return {"windows": result}
 
 
 VK_NAMES = {
@@ -351,6 +374,11 @@ def main(argv: list[str]) -> int:
             response = monitors()
         elif command == "foreground_window":
             response = foreground_window()
+        elif command == "window_info":
+            handle = str(request.get("handle", ""))
+            response = window_info(int(handle, 16 if handle.lower().startswith("0x") else 10))
+        elif command == "windows_list":
+            response = windows_list()
         elif command == "key_hold":
             response = key_hold(str(request.get("keys", "")), int(request.get("ms", 100)))
         elif command == "release_keys":

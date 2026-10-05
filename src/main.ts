@@ -146,12 +146,13 @@ export async function runController(options: CliOptions): Promise<number> {
       lease,
       artifacts,
       loadImages: (job) => supervisor.loadJobImages(job),
-      resolveApiKeys: () => supervisor.resolveApiKeys(),
+      resolveApiKeys: (provider) => supervisor.resolveApiKeys(provider),
       onProgress: (jobId, summary) => supervisor.notifyProgress(jobId, summary),
       onStream: (jobId, kind, text) => supervisor.recordStream(jobId, kind, text),
       onModelUsage: (jobId, usage) => supervisor.recordModelUsage(jobId, usage),
     });
     supervisor.setExecutor(workerExecutor);
+    workerExecutor.prewarm();
 
     sessionMonitor = new SessionMonitor({
       config,

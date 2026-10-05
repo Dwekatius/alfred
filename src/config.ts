@@ -71,6 +71,10 @@ export const ConfigSchema = Type.Object(
   {
     schemaVersion: Type.Literal(CONFIG_SCHEMA_VERSION),
     dryRun: Type.Optional(Type.Boolean()),
+    performance: Type.Optional(Type.Object({
+      prewarmWorker: Type.Optional(Type.Boolean()),
+      stripHistoricalToolImages: Type.Optional(Type.Boolean()),
+    }, { additionalProperties: false })),
     dataRoot: Type.String({ minLength: 3 }),
     workRoot: Type.String({ minLength: 3 }),
     timeZone: Type.String({ minLength: 1 }),
@@ -168,6 +172,7 @@ export interface ModelSlotConfig {
 export type AppConfig = {
   schemaVersion: 1;
   dryRun: boolean;
+  performance?: { prewarmWorker?: boolean; stripHistoricalToolImages?: boolean };
   dataRoot: string;
   workRoot: string;
   timeZone: string;
@@ -261,6 +266,7 @@ export function createDefaultConfig(): AppConfig {
   const raw = {
     schemaVersion: CONFIG_SCHEMA_VERSION,
     dryRun: false,
+    performance: { prewarmWorker: true, stripHistoricalToolImages: true },
     dataRoot: root,
     workRoot: join(root, "work"),
     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",

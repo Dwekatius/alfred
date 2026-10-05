@@ -10,12 +10,21 @@ function assertArtifactAccess(artifactId: string, context: BrokerContext): { pat
   const artifact = context.artifacts.get(artifactId);
   if (!artifact) throw new AgentToolError({ code: "ARTIFACT_NOT_FOUND", message: `No artifact ${artifactId}.`, retryable: false, actionOutcome: "not_started" });
   const job = context.repo.getJob(context.jobId);
-  const allowed = !artifact.job_id || artifact.job_id === job?.id || (artifact.conversation_id && artifact.conversation_id === job?.conversation_id);
+  const artifactConversation = artifact.conversation_id ?? (artifact.job_id ? context.repo.getJob(artifact.job_id)?.conversation_id : undefined);
+  const allowed = !artifact.job_id || artifact.job_id === job?.id || (artifactConversation && artifactConversation === job?.conversation_id);
   if (!allowed) throw new AgentToolError({ code: "ARTIFACT_NOT_FOUND", message: `Artifact ${artifactId} is not available to this job.`, retryable: false, actionOutcome: "not_started" });
   return { path: artifact.relative_path, mime: artifact.mime };
 }
 
 export function registerTelegramTools(broker: ToolBroker): void {
+  broker.registerHandler("artifact_read_image", async (args, context) => {
+    const { artifactId } = args as { artifactId: string };
+    const artifact = assertArtifactAccess(artifactId, context);
+    if (!/^image\/(png|jpeg|webp|gif)$/.test(artifact.mime)) throw new AgentToolError({ code: "ARTIFACT_REJECTED", message: "The requested artifact is not a supported image.", retryable: false, actionOutcome: "not_started" });
+    const saved = await context.artifacts.readBytes(artifactId);
+    if (!saved) throw new AgentToolError({ code: "ARTIFACT_NOT_FOUND", message: "The saved image is no longer available.", retryable: false, actionOutcome: "not_started" });
+    return { content: [{ type: "text", text: `Historical image ${artifactId}. Take a fresh observation before any desktop input.` }, { type: "image", data: saved.bytes.toString("base64"), mimeType: saved.mime }], details: { artifactId } };
+  });
   broker.registerHandler("telegram_send_image", async (args, context) => {
     const { artifactId, caption, exact } = args as { artifactId: string; caption?: string; exact?: boolean };
     assertArtifactAccess(artifactId, context);

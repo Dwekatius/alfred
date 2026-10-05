@@ -34,6 +34,28 @@ const elementOrPoint = Type.Union([
   Type.Object({ point: pointSchema }),
 ]);
 
+const observationOptions = Type.Object({
+  scope: Type.Optional(Type.Union([Type.Literal("desktop"), Type.Literal("window"), Type.Literal("region")])),
+  windowId: Type.Optional(Type.String({ minLength: 1 })),
+  region: Type.Optional(Type.Object({ x: Type.Number(), y: Type.Number(), width: Type.Number({ exclusiveMinimum: 0 }), height: Type.Number({ exclusiveMinimum: 0 }) })),
+  annotate: Type.Optional(Type.Boolean()),
+  includeUiTree: Type.Optional(Type.Boolean()),
+});
+
+const readinessOptions = Type.Object({
+  condition: Type.Union([Type.Literal("window"), Type.Literal("element")]),
+  windowId: Type.Optional(Type.String({ minLength: 1 })),
+  text: Type.Optional(Type.String({ minLength: 1 })),
+  timeoutMs: Type.Optional(Type.Integer({ minimum: 100, maximum: 120000 })),
+  pollIntervalMs: Type.Optional(Type.Integer({ minimum: 100, maximum: 1000 })),
+});
+
+const afterActionFields = {
+  observeAfter: Type.Optional(Type.Boolean({ description: "Default true: return a fresh observation immediately. False skips verification; observe before acting again." })),
+  observation: Type.Optional(observationOptions),
+  waitFor: Type.Optional(readinessOptions),
+};
+
 export const TOOL_SPECS: ToolSpec[] = [
   {
     name: "desktop_observe",
@@ -54,12 +76,13 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: "desktop_click",
     label: "Click",
-    description: "Click one observed element or point. Requires a fresh observationId. Rejects a click if the observation is stale, the window moved, or the target is obscured.",
+    description: "Click one observed element or point using a fresh observationId. Returns the new screen and observationId in the SAME call. Optional waitFor waits only until a named window/element is ready. Do not call desktop_observe again when this result already contains the needed state.",
     parameters: Type.Object({
       observationId,
       target: elementOrPoint,
       button: Type.Optional(Type.Union([Type.Literal("left"), Type.Literal("right"), Type.Literal("middle")])),
       count: Type.Optional(Type.Integer({ minimum: 1, maximum: 3 })),
+      ...afterActionFields,
     }),
     promptSnippet: "Click an observed element/point.",
     sequential: true,
@@ -72,6 +95,7 @@ export const TOOL_SPECS: ToolSpec[] = [
       observationId,
       target: elementOrPoint,
       durationMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 3000 })),
+      ...afterActionFields,
     }),
     promptSnippet: "Move the mouse pointer to an observed target.",
     sequential: true,
@@ -85,6 +109,7 @@ export const TOOL_SPECS: ToolSpec[] = [
       from: elementOrPoint,
       to: elementOrPoint,
       durationMs: Type.Optional(Type.Integer({ minimum: 50, maximum: 5000 })),
+      ...afterActionFields,
     }),
     promptSnippet: "Drag between observed targets.",
     sequential: true,
@@ -92,12 +117,13 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: "desktop_type",
     label: "Type text",
-    description: "Type Unicode text into an observed target. mode=replace selects existing text first; mode=append keeps it. Never presses Enter.",
+    description: "Type Unicode text into an observed target. mode=replace selects existing text first; mode=append keeps it. Returns a fresh screen and observationId in the same call. Never submits with Enter.",
     parameters: Type.Object({
       observationId,
       target: Type.Optional(elementOrPoint),
       text: Type.String(),
       mode: Type.Optional(Type.Union([Type.Literal("replace"), Type.Literal("append")])),
+      ...afterActionFields,
     }),
     promptSnippet: "Type text into an observed control.",
     sequential: true,
@@ -111,6 +137,7 @@ export const TOOL_SPECS: ToolSpec[] = [
       observationId: Type.Optional(observationId),
       holdMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 10000 })),
       repeat: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
+      ...afterActionFields,
     }),
     promptSnippet: "Press a key or shortcut.",
     sequential: true,
@@ -124,6 +151,7 @@ export const TOOL_SPECS: ToolSpec[] = [
       target: elementOrPoint,
       direction: Type.Union([Type.Literal("up"), Type.Literal("down"), Type.Literal("left"), Type.Literal("right")]),
       amount: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
+      ...afterActionFields,
     }),
     promptSnippet: "Scroll an observed area.",
     sequential: true,
@@ -142,13 +170,14 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: "desktop_app",
     label: "Manage application windows",
-    description: "Launch a known executable, focus a window by opaque ID, or move/resize a window.",
+    description: "Launch a known executable, focus a window by opaque ID, or move/resize a window. Returns a fresh screen in the same call. For launch, set waitFor to a window/element name so verification waits for readiness without a fixed sleep.",
     parameters: Type.Object({
       action: Type.Union([Type.Literal("launch"), Type.Literal("focus"), Type.Literal("move"), Type.Literal("resize"), Type.Literal("close")]),
       executable: Type.Optional(Type.String({ minLength: 1 })),
       args: Type.Optional(Type.Array(Type.String())),
       windowId: Type.Optional(Type.String({ minLength: 1 })),
       bounds: Type.Optional(Type.Object({ x: Type.Number(), y: Type.Number(), width: Type.Number({ exclusiveMinimum: 0 }), height: Type.Number({ exclusiveMinimum: 0 }) })),
+      ...afterActionFields,
     }),
     promptSnippet: "Launch/focus/move windows.",
     sequential: true,
@@ -167,13 +196,16 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: "desktop_wait",
     label: "Wait",
-    description: "Wait for a bounded condition: a window to appear, fixed milliseconds, or an element to become visible. Cancellable.",
+    description: "Prefer condition=window with a title in text (or known windowId), or condition=element with text. Polls without screenshots and returns as soon as ready, followed by a fresh observation. Use condition=time with explicit ms only when no readiness condition is available. Cancellable and bounded.",
     parameters: Type.Object({
       condition: Type.Union([Type.Literal("time"), Type.Literal("window"), Type.Literal("element")]),
       ms: Type.Optional(Type.Integer({ minimum: 0, maximum: 30000 })),
       windowId: Type.Optional(Type.String({ minLength: 1 })),
       text: Type.Optional(Type.String({ minLength: 1 })),
       timeoutMs: Type.Optional(Type.Integer({ minimum: 100, maximum: 120000 })),
+      pollIntervalMs: Type.Optional(Type.Integer({ minimum: 100, maximum: 1000 })),
+      observeAfter: Type.Optional(Type.Boolean()),
+      observation: Type.Optional(observationOptions),
     }),
     promptSnippet: "Wait for a bounded condition.",
     sequential: true,
@@ -291,6 +323,14 @@ export const TOOL_SPECS: ToolSpec[] = [
     }),
     promptSnippet: "Inspect or terminate a process.",
     sequential: true,
+  },
+  {
+    name: "artifact_read_image",
+    label: "Retrieve saved image",
+    description: "Read a registered image by artifactId from this owner's conversation. Use when an image from a previous task is needed again. Returns the original image; it is historical evidence, not a fresh desktop observation.",
+    parameters: Type.Object({ artifactId: Type.String({ minLength: 1 }) }),
+    sequential: true,
+    readOnly: true,
   },
   {
     name: "telegram_send_image",

@@ -26,6 +26,17 @@ function rows(db: Database) {
   return db.prepare("SELECT id, kind, text, updated_at FROM stream_events ORDER BY id").all() as Array<{ id: number; kind: string; text: string; updated_at: string }>;
 }
 
+test("request timings and projection sizes persist with exact usage", () => {
+  const { db, supervisor, flush } = setup();
+  supervisor.recordModelUsage("J-test", { protocolVersion: 1, type: "model_usage", jobId: "J-test", leaseGeneration: 1, requestId: "metric", provider: "deepseek", model: "deepseek-flash", inputTokens: 100, outputTokens: 20, cacheReadTokens: 80, cacheWriteTokens: 0, reasoningTokens: 10, costUsd: 0.001, durationMs: 1200, ttftMs: 900, streamMs: 300, responseOpenMs: 750, preparationMs: 12, contextBytes: 4096, imageCount: 1, imageBase64Bytes: 2048 });
+  flush();
+  const row = db.prepare("SELECT * FROM usage_events").get() as Record<string, unknown>;
+  assert.equal(row.duration_ms, 1200); assert.equal(row.ttft_ms, 900); assert.equal(row.response_open_ms, 750);
+  assert.equal(row.context_bytes, 4096); assert.equal(row.image_count, 1); assert.equal(row.image_base64_bytes, 2048);
+  assert.equal(row.reasoning_tokens, 10);
+  db.close();
+});
+
 test("thinking deltas aggregate into one row and end markers close the block", () => {
   const { db, supervisor, flush } = setup();
   supervisor.recordStream("J-1", "thinking", "Let me ");

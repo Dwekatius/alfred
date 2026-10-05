@@ -2,7 +2,7 @@
  * Supervisor-side worker manager: forks one disposable Pi worker per job,
  * relays validated tool requests to the broker, and enforces hard termination.
  */
-import { fork, type ChildProcess } from "node:child_process";
+import { type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -15,6 +15,7 @@ import type { ToolBroker } from "../tools/broker.js";
 import type { DesktopLease } from "../tools/desktop-lease.js";
 import type { ArtifactRegistry } from "../artifacts/registry.js";
 import { findCachedModel } from "./models.js";
+import { abortable, DisposableWorkerPool, terminateWorker } from "./worker-pool.js";
 
 export interface WorkerExecutorDeps {
   config: AppConfig;
@@ -33,7 +34,9 @@ export interface WorkerExecutorDeps {
   /** Exact usage/cost of one assistant response. */
   onModelUsage?: (jobId: string, usage: ModelUsageMessage) => void;
   /** Decrypt provider API keys (DPAPI) so the worker can use them without auth.json. */
-  resolveApiKeys?: () => Promise<Array<{ provider: string; key: string }>>;
+  resolveApiKeys?: (provider: string) => Promise<Array<{ provider: string; key: string }>>;
+  /** Test seam for lifecycle/failure/cancellation integration tests. */
+  workerMainPath?: string;
 }
 
 interface WorkerHandle {
@@ -49,16 +52,24 @@ interface WorkerHandle {
 export class WorkerExecutor implements JobExecutor {
   private readonly workers = new Map<string, WorkerHandle>();
   private counter = 0;
+  private readonly pool: DisposableWorkerPool;
+  private disposed = false;
 
-  constructor(private readonly deps: WorkerExecutorDeps) {}
+  constructor(private readonly deps: WorkerExecutorDeps) {
+    this.pool = new DisposableWorkerPool({ mainPath: this.workerMainPath(), logger: deps.logger, enabled: deps.config.performance?.prewarmWorker ?? true });
+  }
+
+  prewarm(): Promise<void> { return this.pool.prewarm(); }
 
   private workerMainPath(): string {
-    return join(dirname(fileURLToPath(import.meta.url)), "worker-main.js");
+    return this.deps.workerMainPath ?? join(dirname(fileURLToPath(import.meta.url)), "worker-main.js");
   }
 
   async execute(context: { job: JobRow; signal: AbortSignal; deadline: number }): Promise<JobOutcome> {
     const { job } = context;
-    const { repo, broker, lease, logger } = this.deps;
+    const { repo, lease, logger } = this.deps;
+    const startedAt = Date.now();
+    if (this.disposed || context.signal.aborted) return { state: "cancelled", errorCode: "CANCELLED", errorMessage: "Worker execution cancelled before assignment." };
     const current = repo.getJob(job.id);
     if (!current) return { state: "failed", errorCode: "INTERNAL_ERROR", errorMessage: "Job disappeared before start." };
     const leaseGeneration = current.lease_generation;
@@ -68,13 +79,18 @@ export class WorkerExecutor implements JobExecutor {
     const slot = this.modelSnapshot(current);
     const metadata = findCachedModel(this.deps.paths, slot.provider, slot.modelId);
 
-    const env = { ...process.env, PI_TG_WORKER: "1" };
-    const child = fork(this.workerMainPath(), [], {
-      stdio: ["ignore", "pipe", "pipe", "ipc"],
-      env,
-      windowsHide: true,
-      serialization: "json",
-    });
+    let child: ChildProcess;
+    try {
+      const taken = await this.pool.take(context.signal);
+      child = taken.child;
+      logger.info("worker.assigned", "Disposable worker assigned.", { jobId: job.id, poolWaitMs: taken.poolWaitMs, wasWarm: taken.wasWarm, processAgeMs: taken.processAgeMs });
+    } catch (error) {
+      lease.revoke();
+      this.pool.prewarm();
+      return context.signal.aborted || this.disposed
+        ? { state: "cancelled", errorCode: "CANCELLED", errorMessage: "Cancelled while preparing a worker." }
+        : { state: "failed", errorCode: "WORKER_ERROR", errorMessage: (error as Error).message };
+    }
     const handle: WorkerHandle = { jobId: job.id, leaseGeneration, child, aborting: false, killed: false, lastModelTurns: 0, settled: Promise.resolve({ resultText: "" }) };
 
     let settledResolve: (value: { resultText: string }) => void = () => undefined;
@@ -84,16 +100,8 @@ export class WorkerExecutor implements JobExecutor {
       settledReject = reject;
     });
 
-    child.stderr?.setEncoding("utf8");
-    let stderrBuffer = "";
-    child.stderr?.on("data", (chunk: string) => {
-      stderrBuffer += chunk;
-      const lines = stderrBuffer.split("\n");
-      stderrBuffer = lines.pop() ?? "";
-      for (const line of lines) {
-        if (line.trim().length > 0) logger.debug("worker.stderr", "Worker process wrote to stderr.", { jobId: job.id, message: redactString(line).slice(0, 2000), eventCode: "WORKER_STDERR" });
-      }
-    });
+    // A child can fail while credentials/images are still loading.
+    void handle.settled.catch(() => undefined);
 
     const onMessage = async (raw: unknown): Promise<void> => {
       const message = parseWorkerMessage(raw);
@@ -106,6 +114,7 @@ export class WorkerExecutor implements JobExecutor {
         return;
       }
       try {
+        if (message.type === "session_mapped") logger.info("worker.session_ready", "Worker session ready.", { jobId: job.id, durationMs: Date.now() - startedAt });
         await this.handleWorkerMessage(handle, message, context.signal, settledResolve, settledReject);
       } catch (error) {
         logger.error("worker.message_failed", "Failed to handle worker message.", { jobId: job.id, message: redactString((error as Error).message), eventCode: "WORKER_MESSAGE_FAILED" });
@@ -113,71 +122,78 @@ export class WorkerExecutor implements JobExecutor {
     };
     child.on("message", (raw: unknown) => void onMessage(raw));
 
-    const exitPromise = new Promise<void>((resolve) => {
-      child.once("exit", (code, signal) => {
-        logger.info("worker.exited", "Worker process exited.", { jobId: job.id, exitCode: code ?? undefined, eventCode: "WORKER_EXITED", attempt: undefined });
-        if (!handle.killed) {
-          settledReject(new Error(handle.aborting ? "cancelled" : `Worker exited unexpectedly (code ${code ?? "none"}, signal ${signal ?? "none"})`));
-        }
-        resolve();
-      });
-    });
-
-    const startMessage: StartJobMessage = {
-      protocolVersion: IPC_PROTOCOL_VERSION,
-      type: "start_job",
-      jobId: job.id,
-      leaseGeneration,
-      requestId: this.nextRequestId(),
-      taskText: current.task_text,
-      workRoot: this.deps.paths.workRoot,
-      sessionDir: this.deps.paths.sessionsDir,
-      sessionFile,
-      authPath: this.deps.config.models.authPath,
-      modelsPath: this.deps.paths.modelsPath,
-      modelsStorePath: this.deps.paths.modelsStorePath,
-      model: { provider: slot.provider, modelId: slot.modelId, thinking: slot.thinking },
-      images: this.deps.loadImages ? await this.deps.loadImages(current) : [],
-      apiKeys: this.deps.resolveApiKeys ? await this.deps.resolveApiKeys() : [],
-      limits: {
-        maxToolCalls: this.deps.config.jobs.maxToolCalls,
-        maxModelTurns: this.deps.config.jobs.maxModelTurns,
-        maxRunSeconds: this.deps.config.jobs.maxRunSeconds,
-      },
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      logger.info("worker.exited", "Worker process exited.", { jobId: job.id, exitCode: code ?? undefined, eventCode: "WORKER_EXITED", attempt: undefined });
+      settledReject(new Error(handle.aborting ? "cancelled" : `Worker exited unexpectedly (code ${code ?? "none"}, signal ${signal ?? "none"})`));
     };
-    if (metadata?.input && !metadata.input.includes("image") && startMessage.images.length > 0) {
-      logger.warn("worker.vision_unsupported", "Selected model does not declare image input; inbound images may be rejected.", { jobId: job.id, eventCode: "VISION_UNSUPPORTED" });
-    }
-
-    const abortListener = () => {
-      void this.cancelHandle(handle, "deadline or job abort");
-    };
+    const onError = (error: Error) => settledReject(error);
+    child.once("exit", onExit);
+    child.on("error", onError);
+    const abortListener = () => { void this.cancelHandle(handle, "deadline or job abort"); };
     context.signal.addEventListener("abort", abortListener, { once: true });
     this.workers.set(job.id, handle);
-    // The worker exists and has been given its start message: this is the
-    // point where the job leaves "starting" so success/failure transitions
-    // are valid from here on.
-    try {
-      if (repo.getJob(job.id)?.state === "starting") repo.transitionJob(job.id, "running", { reason: "worker started" });
-    } catch (error) {
-      logger.warn("worker.running_transition_failed", "Could not move the job to running.", { jobId: job.id, detail: (error as Error).message, eventCode: "WORKER_RUNNING_TRANSITION" });
-    }
-    child.send(startMessage);
 
     try {
-      const settled = await handle.settled;
+      const credentialsAt = Date.now();
+      const inputs = Promise.all([
+        this.deps.loadImages ? this.deps.loadImages(current) : Promise.resolve([]),
+        this.deps.resolveApiKeys ? this.deps.resolveApiKeys(slot.provider) : Promise.resolve([]),
+      ]);
+      const earlyExit = handle.settled.then(() => { throw new Error("Worker settled before job assignment."); });
+      const [images, apiKeys] = await abortable(Promise.race([inputs, earlyExit]), context.signal);
+      context.signal.throwIfAborted();
+      logger.info("worker.inputs_ready", "Worker inputs ready.", { jobId: job.id, durationMs: Date.now() - credentialsAt, provider: slot.provider, imageCount: images.length });
+      const startMessage: StartJobMessage = {
+        protocolVersion: IPC_PROTOCOL_VERSION,
+        type: "start_job",
+        jobId: job.id,
+        leaseGeneration,
+        requestId: this.nextRequestId(),
+        taskText: current.task_text,
+        workRoot: this.deps.paths.workRoot,
+        sessionDir: this.deps.paths.sessionsDir,
+        sessionFile,
+        authPath: this.deps.config.models.authPath,
+        modelsPath: this.deps.paths.modelsPath,
+        modelsStorePath: this.deps.paths.modelsStorePath,
+        model: { provider: slot.provider, modelId: slot.modelId, thinking: slot.thinking },
+        images,
+        apiKeys: apiKeys.filter((entry) => entry.provider === slot.provider),
+        stripHistoricalToolImages: this.deps.config.performance?.stripHistoricalToolImages ?? true,
+        limits: {
+          maxToolCalls: this.deps.config.jobs.maxToolCalls,
+          maxModelTurns: this.deps.config.jobs.maxModelTurns,
+          maxRunSeconds: this.deps.config.jobs.maxRunSeconds,
+        },
+      };
+      if (metadata?.input && !metadata.input.includes("image") && startMessage.images.length > 0) {
+        logger.warn("worker.vision_unsupported", "Selected model does not declare image input; inbound images may be rejected.", { jobId: job.id, eventCode: "VISION_UNSUPPORTED" });
+      }
+
+      // The assigned worker is now about to receive its job snapshot.
+      try {
+        if (repo.getJob(job.id)?.state === "starting") repo.transitionJob(job.id, "running", { reason: "worker started" });
+      } catch (error) {
+        logger.warn("worker.running_transition_failed", "Could not move the job to running.", { jobId: job.id, detail: (error as Error).message, eventCode: "WORKER_RUNNING_TRANSITION" });
+      }
+      if (!child.connected || child.exitCode !== null || child.killed) throw new Error("Worker exited before assignment.");
+      await new Promise<void>((resolve, reject) => child.send(startMessage, (error) => error ? reject(error) : resolve()));
+      const settled = await abortable(handle.settled, context.signal);
       return { state: "succeeded", resultText: settled.resultText };
     } catch (error) {
       const messageText = (error as Error).message;
-      if (handle.aborting || messageText === "cancelled") {
+      if (context.signal.aborted || handle.aborting || messageText === "cancelled") {
         return { state: "cancelled", errorCode: "CANCELLED", errorMessage: "Job was cancelled." };
       }
       return { state: "failed", errorCode: "WORKER_ERROR", errorMessage: messageText };
     } finally {
       context.signal.removeEventListener("abort", abortListener);
       this.workers.delete(job.id);
-      await this.terminateIfAlive(child);
+      await terminateWorker(child);
+      child.off("exit", onExit);
+      child.off("error", onError);
       lease.revoke();
+      this.pool.prewarm();
     }
   }
 
@@ -267,6 +283,7 @@ export class WorkerExecutor implements JobExecutor {
   private async cancelHandle(handle: WorkerHandle, reason: string): Promise<void> {
     if (handle.aborting) return;
     handle.aborting = true;
+    if (handle.child.exitCode !== null || handle.child.signalCode !== null) return;
     this.deps.logger.info("worker.cancel", "Requesting worker cancellation.", { jobId: handle.jobId, reason, eventCode: "WORKER_CANCEL" });
     try {
       if (handle.child.connected) {
@@ -276,7 +293,12 @@ export class WorkerExecutor implements JobExecutor {
       /* process may already be gone */
     }
     const graceMs = this.deps.config.jobs.stopGraceMs;
-    const exited = await Promise.race([new Promise<boolean>((resolve) => handle.child.once("exit", () => resolve(true))), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), graceMs))]);
+    const exited = await new Promise<boolean>((resolve) => {
+      const done = (value: boolean) => { clearTimeout(timer); handle.child.off("exit", onExit); resolve(value); };
+      const onExit = () => done(true);
+      const timer = setTimeout(() => done(false), graceMs);
+      handle.child.once("exit", onExit);
+    });
     if (!exited) {
       this.deps.logger.warn("worker.hard_kill", "Worker did not stop within the grace period; killing it.", { jobId: handle.jobId, eventCode: "WORKER_HARD_KILL" });
       handle.killed = true;
@@ -314,19 +336,12 @@ export class WorkerExecutor implements JobExecutor {
   }
 
   async dispose(): Promise<void> {
+    this.disposed = true;
+    await this.pool.dispose();
     for (const handle of [...this.workers.values()]) {
       await this.cancelHandle(handle, "executor dispose");
     }
     this.workers.clear();
-  }
-
-  private async terminateIfAlive(child: ChildProcess): Promise<void> {
-    if (child.exitCode !== null || child.killed) return;
-    try {
-      child.kill();
-    } catch {
-      /* already gone */
-    }
   }
 
   private nextRequestId(): string {

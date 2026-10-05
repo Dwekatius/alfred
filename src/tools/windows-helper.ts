@@ -39,7 +39,8 @@ export class WindowsHelper {
     private readonly timeoutMs = 15000,
   ) {}
 
-  async run<T>(command: string, payload: Record<string, unknown> = {}): Promise<T> {
+  async run<T>(command: string, payload: Record<string, unknown> = {}, options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<T> {
+    options.signal?.throwIfAborted();
     const python = resolvePython();
     const exe = python[0] as string;
     const args = [...python.slice(1), this.scriptPath, command];
@@ -47,31 +48,42 @@ export class WindowsHelper {
       const child = spawn(exe, args, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
       const out: Buffer[] = [];
       const err: Buffer[] = [];
+      let settled = false;
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        options.signal?.removeEventListener("abort", onAbort);
+        fn();
+      };
+      const onAbort = () => { finish(() => reject(options.signal?.reason ?? new Error("Windows helper cancelled"))); child.kill(); };
+      const timeoutMs = options.timeoutMs ?? this.timeoutMs;
       const timer = setTimeout(() => {
+        finish(() => reject(new Error(`Windows helper ${command} timed out after ${timeoutMs}ms`)));
         child.kill();
-        reject(new Error(`Windows helper ${command} timed out after ${this.timeoutMs}ms`));
-      }, this.timeoutMs);
+      }, timeoutMs);
+      options.signal?.addEventListener("abort", onAbort, { once: true });
       child.stdout.on("data", (chunk: Buffer) => out.push(chunk));
       child.stderr.on("data", (chunk: Buffer) => err.push(chunk));
       child.on("error", (error) => {
-        clearTimeout(timer);
-        reject(new Error(`Windows helper failed to start: ${error.message}`));
+        finish(() => reject(new Error(`Windows helper failed to start: ${error.message}`)));
       });
       child.on("close", () => {
-        clearTimeout(timer);
+        if (settled) return;
         const text = Buffer.concat(out).toString("utf8").trim();
         try {
           const parsed = JSON.parse(text) as T & { error?: string };
           if (parsed && typeof parsed === "object" && "error" in parsed && parsed.error) {
-            reject(new Error(`Windows helper ${command}: ${parsed.error}`));
+            finish(() => reject(new Error(`Windows helper ${command}: ${parsed.error}`)));
             return;
           }
-          resolvePromise(parsed);
+          finish(() => resolvePromise(parsed));
         } catch (error) {
           const stderr = Buffer.concat(err).toString("utf8").trim().slice(0, 300);
-          reject(new Error(`Windows helper ${command} returned invalid JSON: ${(error as Error).message}${stderr ? ` (stderr: ${stderr})` : ""}`));
+          finish(() => reject(new Error(`Windows helper ${command} returned invalid JSON: ${(error as Error).message}${stderr ? ` (stderr: ${stderr})` : ""}`)));
         }
       });
+      child.stdin.on("error", () => undefined);
       child.stdin.end(JSON.stringify(payload));
     });
   }
@@ -87,6 +99,15 @@ export class WindowsHelper {
 
   async foregroundWindow(): Promise<ForegroundWindowInfo> {
     return await this.run<ForegroundWindowInfo>("foreground_window");
+  }
+
+  async windowInfo(handle: string): Promise<ForegroundWindowInfo & { visible?: boolean; minimized?: boolean }> {
+    return await this.run("window_info", { handle });
+  }
+
+  async windowsList(options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<Array<ForegroundWindowInfo & { visible?: boolean; minimized?: boolean }>> {
+    const result = await this.run<{ windows: Array<ForegroundWindowInfo & { visible?: boolean; minimized?: boolean }> }>("windows_list", {}, options);
+    return result.windows;
   }
 
   async keyHold(keys: string, ms: number): Promise<unknown> {

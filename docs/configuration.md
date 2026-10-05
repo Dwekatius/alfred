@@ -11,6 +11,7 @@ Secrets are **never** in `config.json`. The bot token and API keys live DPAPI-en
 `%USERPROFILE%\.pi\alfred\secrets\`.
 
 - [Top level](#top-level)
+- [Performance settings](performance.md)
 - [telegram](#telegram)
 - [models](#models)
 - [desktop](#desktop)

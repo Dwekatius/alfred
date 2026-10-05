@@ -1,6 +1,10 @@
 {
   "schemaVersion": 1,
   "dryRun": false,
+  "performance": {
+    "prewarmWorker": true,
+    "stripHistoricalToolImages": true
+  },
   "dataRoot": "C:\\Users\\YOUR_USERNAME\\.pi\\alfred",
   "workRoot": "C:\\Users\\YOUR_USERNAME\\.pi\\alfred\\work",
   "timeZone": "UTC",

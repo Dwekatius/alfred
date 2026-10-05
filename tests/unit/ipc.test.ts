@@ -1,8 +1,23 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { IPC_PROTOCOL_VERSION, parseSupervisorMessage, parseWorkerMessage } from "../../src/ipc.js";
+import { IPC_PROTOCOL_VERSION, parsePoolReadyMessage, parseSupervisorMessage, parseWorkerMessage } from "../../src/ipc.js";
 
 const envelope = { protocolVersion: IPC_PROTOCOL_VERSION, jobId: "J-1", leaseGeneration: 1, requestId: "r-1" };
+
+test("pool readiness is validated separately and cannot pass as a job message", () => {
+  const ready = { protocolVersion: IPC_PROTOCOL_VERSION, type: "pool_ready", pid: 123 };
+  assert.ok(parsePoolReadyMessage(ready));
+  assert.equal(parseWorkerMessage(ready), undefined);
+  assert.equal(parsePoolReadyMessage({ ...ready, pid: NaN }), undefined);
+  assert.equal(parsePoolReadyMessage({ ...ready, pid: -1 }), undefined);
+});
+
+test("nonfinite or negative performance metrics are rejected", () => {
+  const usage = { ...envelope, type: "model_usage", provider: "deepseek", model: "flash", inputTokens: 1, outputTokens: 1, contextBytes: 1 };
+  assert.ok(parseWorkerMessage(usage));
+  assert.equal(parseWorkerMessage({ ...usage, durationMs: NaN }), undefined);
+  assert.equal(parseWorkerMessage({ ...usage, imageCount: -1 }), undefined);
+});
 
 test("valid worker tool requests parse", () => {
   const message = parseWorkerMessage({ ...envelope, type: "tool_request", toolCallId: "t1", toolName: "fake_echo", args: { text: "hi" } });

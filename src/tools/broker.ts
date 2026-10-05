@@ -226,6 +226,7 @@ export class ToolBroker {
       questions: deps.questions,
       runExclusive: (fn) => deps.lease.mutex.runExclusive(fn),
       assertLease: () => {
+        if (request.signal.aborted) throw new AgentToolError({ code: "CANCELLED", message: "Job cancelled before the next operation.", retryable: false, actionOutcome: "not_started" });
         const job = deps.repo.getJob(request.jobId);
         if (!job) throw new AgentToolError({ code: "LEASE_REVOKED", message: "Job no longer exists.", retryable: false, actionOutcome: "not_started" });
         if (job.lease_generation !== request.leaseGeneration) {
@@ -233,6 +234,9 @@ export class ToolBroker {
         }
         if (["cancelled", "failed", "succeeded", "interrupted", "cancelling"].includes(job.state)) {
           throw new AgentToolError({ code: "LEASE_REVOKED", message: `Job is ${job.state}.`, retryable: false, actionOutcome: "not_started" });
+        }
+        if (!toolSpecByName(request.toolName)?.readOnly && (["paused", "waiting_for_unlock"].includes(job.state) || deps.lease.isPaused(request.jobId))) {
+          throw new AgentToolError({ code: "PAUSED", message: "Job paused before the next operation.", retryable: false, actionOutcome: "not_started" });
         }
       },
       requireApproval: async (input) => {

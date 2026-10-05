@@ -18,6 +18,8 @@ import type { WindowsBackend } from "./windows-mcp.js";
 import type { McpContentBlock } from "./mcp-client.js";
 import type { ArtifactRegistry } from "../artifacts/registry.js";
 import { resolveSafePath } from "./files.js";
+import { inlineBrowserSnapshot } from "./browser-snapshot.js";
+import { projectRoot } from "./windows-mcp.js";
 
 export interface BrowserToolDeps {
   browser: BrowserBackend;
@@ -73,7 +75,10 @@ export function installBrowserTools(broker: ToolBroker, deps: BrowserToolDeps): 
     }
   };
 
-  const textResult = (text: string, details: Record<string, unknown> = {}) => ({ content: [{ type: "text" as const, text: text.slice(0, TEXT_LIMIT) }], details });
+  const textResult = (text: string, details: Record<string, unknown> = {}) => {
+    const snapshot = inlineBrowserSnapshot(text, deps.config.browser.outputDir, projectRoot());
+    return { content: [{ type: "text" as const, text: snapshot.text.slice(0, TEXT_LIMIT) }], details: { ...details, ...(snapshot.expanded ? { hasSnapshot: true } : {}) } };
+  };
 
   broker.registerHandler("browser_navigate", async (args, context) => {
     await ensureVisible(context);
@@ -134,7 +139,17 @@ export function installBrowserTools(broker: ToolBroker, deps: BrowserToolDeps): 
 
   broker.registerHandler("browser_take_screenshot", async (args, context) => {
     await ensureVisible(context);
-    const result = await call("browser_take_screenshot", args as Record<string, unknown>, context, 90000);
+    const parsed = args as { filename?: string; type?: "png" | "jpeg" };
+    // Playwright resolves explicit relative names against its workspace, whereas
+    // unnamed captures go to outputDir. Keep both forms in our artifact directory.
+    const captureArgs = { ...args as Record<string, unknown> };
+    let filename = parsed.filename ? basename(parsed.filename) : undefined;
+    if (filename) {
+      if (filename === "." || filename === "..") throw new AgentToolError({ code: "VALIDATION_ERROR", message: "A screenshot filename must name an image file.", retryable: false, actionOutcome: "not_started" });
+      if (!/\.(png|jpe?g|webp)$/i.test(filename)) filename += parsed.type === "jpeg" ? ".jpg" : ".png";
+      captureArgs.filename = join(deps.config.browser.outputDir, filename);
+    }
+    const result = await call("browser_take_screenshot", captureArgs, context, 90000);
     const image = imageOf(result.content);
     if (image) {
       const artifact = registerImage(context, deps.artifacts, image, (args as { filename?: string }).filename ?? "page-screenshot.png");
@@ -143,9 +158,10 @@ export function installBrowserTools(broker: ToolBroker, deps: BrowserToolDeps): 
         details: { artifactId: artifact.id },
       };
     }
-    const saved = registerNewestOutputFile(context, deps, (args as { filename?: string }).filename ?? "page-screenshot.png");
-    if (saved) return textResult(`${textOf(result.content)}\nartifact: ${saved.id}`, { artifactId: saved.id });
-    return textResult(textOf(result.content));
+    const saved = registerNewestOutputFile(context, deps, filename ?? "page-screenshot.png", "screenshot", Boolean(filename), parsed.type ? `image/${parsed.type}` : undefined);
+    const bytes = saved ? await deps.artifacts.readBytes(saved.id) : undefined;
+    if (!saved || !bytes) throw new AgentToolError({ code: "ARTIFACT_NOT_FOUND", message: "The browser did not produce a usable screenshot image.", retryable: true, actionOutcome: "not_started" });
+    return { content: [{ type: "text", text: `${textOf(result.content)}\nartifact: ${saved.id}` }, { type: "image", data: bytes.bytes.toString("base64"), mimeType: bytes.mime }], details: { artifactId: saved.id } };
   });
 
   broker.registerHandler("browser_tabs", async (args, context) => {
@@ -232,18 +248,18 @@ function registerImage(context: BrokerContext, artifacts: ArtifactRegistry, imag
   return artifacts.register({ jobId: context.jobId, kind: "screenshot", mime: image.mimeType, filename, bytes: Buffer.from(image.data, "base64") });
 }
 
-function registerNewestOutputFile(context: BrokerContext, deps: BrowserToolDeps, filename: string, kind: "screenshot" | "document" = "screenshot") {
+function registerNewestOutputFile(context: BrokerContext, deps: BrowserToolDeps, filename: string, kind: "screenshot" | "document" = "screenshot", exact = false, mimeOverride?: string) {
   const outputDir = resolve(deps.config.browser.outputDir);
   if (!existsSync(outputDir)) return undefined;
   const candidates = readdirSync(outputDir)
     .map((name) => join(outputDir, name))
-    .filter((path) => existsSync(path) && statSync(path).isFile())
+    .filter((path) => existsSync(path) && statSync(path).isFile() && (kind === "screenshot" ? /\.(png|jpe?g|webp)$/i.test(path) : /\.pdf$/i.test(path)))
     .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
-  const target = candidates.find((path) => basename(path) === basename(filename)) ?? candidates[0];
+  const target = candidates.find((path) => basename(path) === basename(filename)) ?? (exact ? undefined : candidates[0]);
   if (!target) return undefined;
   const resolved = resolve(target);
   if (!resolved.startsWith(outputDir + sep)) return undefined;
-  const mime = resolved.toLowerCase().endsWith(".pdf") ? "application/pdf" : resolved.toLowerCase().endsWith(".jpg") || resolved.toLowerCase().endsWith(".jpeg") ? "image/jpeg" : resolved.toLowerCase().endsWith(".png") ? "image/png" : "application/octet-stream";
+  const mime = mimeOverride ?? (resolved.toLowerCase().endsWith(".pdf") ? "application/pdf" : resolved.toLowerCase().endsWith(".jpg") || resolved.toLowerCase().endsWith(".jpeg") ? "image/jpeg" : resolved.toLowerCase().endsWith(".webp") ? "image/webp" : "image/png");
   try {
     return deps.artifacts.register({ jobId: context.jobId, kind, mime, filename: basename(resolved), sourcePath: resolved });
   } catch (error) {
