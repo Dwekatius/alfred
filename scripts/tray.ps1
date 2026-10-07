@@ -122,7 +122,7 @@ $configItem.Add_Click({ Start-Process notepad.exe $ConfigPath })
 $doctorItem = $menu.Items.Add('Run doctor')
 $doctorItem.Add_Click({ $script = Join-Path $ProjectRoot 'scripts\doctor.ps1'; Start-Process powershell.exe -ArgumentList "-NoExit -NoProfile -ExecutionPolicy Bypass -File `"$script`"" })
 $dashboardItem = $menu.Items.Add('Open dashboard')
-$dashboardItem.Add_Click({ $script = Join-Path $ProjectRoot 'scripts\dashboard-window.ps1'; Start-Process powershell.exe -ArgumentList "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$script`"" })
+$dashboardItem.Add_Click({ Open-Dashboard })
 $pairItem = $menu.Items.Add('Pairing window')
 $pairItem.Add_Click({ $script = Join-Path $ProjectRoot 'scripts\pair-window.ps1'; Start-Process powershell.exe -ArgumentList "-NoExit -NoProfile -ExecutionPolicy Bypass -File `"$script`"" })
 $null = $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator))
@@ -162,14 +162,14 @@ $timer.Start()
 Update-Tray
 if (-not $NoAutoStart) {
   $existing = Get-AgentStatus
-  if (-not $existing) {
-    if (Start-Agent) {
+  if (Start-Agent) {
+    if (-not $existing) {
       $notify.ShowBalloonTip(4000, 'Alfred', 'Agent started. Message your bot in Telegram.', [System.Windows.Forms.ToolTipIcon]::Info)
-    } else {
-      $notify.ShowBalloonTip(5000, 'Alfred', 'Could not start the agent. Right-click for logs and doctor.', [System.Windows.Forms.ToolTipIcon]::Warning)
     }
-    Update-Tray
+  } else {
+    $notify.ShowBalloonTip(5000, 'Alfred', 'Could not start the agent. Right-click for logs and doctor.', [System.Windows.Forms.ToolTipIcon]::Warning)
   }
+  Update-Tray
 }
 
 try {

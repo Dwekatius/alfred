@@ -31,6 +31,7 @@ import { installPowerShellTools } from "./tools/powershell.js";
 import { ScreenshotService } from "./artifacts/screenshot.js";
 import { ProcessManager } from "./platform/process-manager.js";
 import { SessionMonitor } from "./platform/session-monitor.js";
+import { openDashboardWindow } from "./platform/dashboard-window.js";
 
 export interface CliOptions {
   configPath: string;
@@ -233,6 +234,9 @@ export async function runController(options: CliOptions): Promise<number> {
 
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
+
+  // Opening the local UI must not wait for Telegram network requests.
+  if (!config.dryRun && !options.once) openDashboardWindow(options.configPath, logger);
 
   try {
     await supervisor.start();

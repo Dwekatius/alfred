@@ -2,13 +2,13 @@
  * Settings service for the dashboard's Settings tab.
  *
  * The important one is "start with Windows": it registers/removes the same
- * per-user logon task the tray scripts use. Other settings patch the validated
+ * per-user logon task and removes legacy Startup folder shortcuts. Other settings patch the validated
  * configuration atomically; the running controller hot-reloads them.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { AppConfig, DataPaths, ConfigError, projectRoot, saveConfigAtomic, validateConfig } from "./config.js";
+import { AppConfig, DataPaths, ConfigError, defaultConfigPath, projectRoot, saveConfigAtomic, validateConfig } from "./config.js";
 import { Logger } from "./logging.js";
 
 const TASK_NAME = "Alfred";
@@ -19,26 +19,31 @@ export interface StartupState {
   enabled: boolean;
   state: string;
   trigger: string;
+  sources: Array<{ kind: "task" | "startup-folder"; enabled: boolean; state: string }>;
+  error?: string;
 }
 
 export function getStartupState(): StartupState {
-  const script =
-    `$t = Get-ScheduledTask -TaskName '${TASK_NAME}' -ErrorAction SilentlyContinue; ` +
-    `if ($t) { "$($t.State)|$($t.Settings.Enabled)|$($t.Triggers[0].CimClass.CimClassName)" } else { "missing||" }`;
-  const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", windowsHide: true, timeout: 20000 });
-  const line = (result.stdout ?? "").trim();
-  const [state = "unknown", enabled = "", trigger = ""] = line.split("|");
-  const registered = state.length > 0 && state !== "missing";
-  return { taskName: TASK_NAME, registered, enabled: enabled === "True", state: registered ? state : "missing", trigger: trigger || "" };
+  const script = join(projectRoot(), "scripts", "startup-status.ps1");
+  const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script], { encoding: "utf8", windowsHide: true, timeout: 20000 });
+  try {
+    if (result.error || result.status !== 0) throw new Error("Startup inventory failed.");
+    const value = JSON.parse(result.stdout.trim()) as StartupState;
+    if (typeof value.registered !== "boolean" || typeof value.enabled !== "boolean" || typeof value.state !== "string" || !Array.isArray(value.sources)) throw new Error("Invalid startup inventory.");
+    return value;
+  } catch {
+    return { taskName: TASK_NAME, registered: false, enabled: false, state: "unknown", trigger: "", sources: [], error: "Could not check Windows startup. Try again or run the startup-status script." };
+  }
 }
 
-export function setStartup(enabled: boolean): { ok: boolean; message: string; startup: StartupState } {
+export function setStartup(enabled: boolean, configPath: string = defaultConfigPath()): { ok: boolean; message: string; startup: StartupState } {
   const script = join(projectRoot(), "scripts", enabled ? "install-startup.ps1" : "remove-startup.ps1");
   if (!existsSync(script)) return { ok: false, message: `${enabled ? "install-startup" : "remove-startup"}.ps1 is missing from the project.`, startup: getStartupState() };
-  const result = spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script], { encoding: "utf8", windowsHide: true, timeout: 30000 });
+  const args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, ...(enabled ? ["-ConfigPath", configPath] : [])];
+  const result = spawnSync("powershell.exe", args, { encoding: "utf8", windowsHide: true, timeout: 30000 });
   const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim().split("\n").filter(Boolean).slice(-4).join("\n");
   const startup = getStartupState();
-  if (result.status !== 0 || (enabled && !startup.registered) || (!enabled && startup.registered)) {
+  if (result.error || result.status !== 0 || startup.error || startup.enabled !== enabled || (!enabled && startup.registered)) {
     return { ok: false, message: `Could not change startup${output ? `: ${output}` : ` (exit ${result.status ?? "unknown"})`}`, startup };
   }
   return {

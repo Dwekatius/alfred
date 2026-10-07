@@ -937,6 +937,15 @@
 
   let settingsState = null;
 
+  function renderStartup(startup) {
+    $("startupToggle").checked = Boolean(startup.registered && startup.enabled);
+    $("startupToggle").disabled = Boolean(startup.error);
+    $("startupStatus").textContent = startup.error
+      || (startup.enabled
+        ? `Enabled · ${startup.state} · ${startup.trigger || "Sign-in"}`
+        : "Disabled — the assistant only starts when you launch it.");
+  }
+
   function aboutRow(label, value) {
     return `<div class="about-row"><span>${label}</span><code>${value}</code></div>`;
   }
@@ -945,10 +954,7 @@
     try {
       const data = await api("/api/settings");
       settingsState = data;
-      $("startupToggle").checked = data.startup.registered && data.startup.enabled;
-      $("startupStatus").textContent = data.startup.registered
-        ? `Registered · ${data.startup.state}${data.startup.trigger ? ` · ${data.startup.trigger}` : ""}`
-        : "Not registered — the assistant only starts when you launch it.";
+      renderStartup(data.startup);
       $("pauseInputToggle").checked = data.settings.pauseOnObservedHumanInput;
       $("hotkeyInput").value = data.settings.localStopHotkey;
       $("maxRunInput").value = Math.round(data.settings.maxRunSeconds / 60);
@@ -977,21 +983,19 @@
   $("startupToggle").addEventListener("change", async (event) => {
     const enabled = event.target.checked;
     event.target.disabled = true;
-    setLine("startupResult", enabled ? "Registering the startup task…" : "Removing the startup task…", "busy");
+    setLine("startupResult", enabled ? "Enabling startup…" : "Removing Alfred login launches…", "busy");
     try {
       const result = await api("/api/settings/startup", { method: "POST", body: { enabled } });
       setLine("startupResult", result.message, result.ok ? "ok" : "err");
       if (result.startup) {
-        event.target.checked = result.startup.registered && result.startup.enabled;
-        $("startupStatus").textContent = result.startup.registered
-          ? `Registered · ${result.startup.state}${result.startup.trigger ? ` · ${result.startup.trigger}` : ""}`
-          : "Not registered — the assistant only starts when you launch it.";
+        if (settingsState) settingsState.startup = result.startup;
+        renderStartup(result.startup);
       }
     } catch (error) {
       setLine("startupResult", `Failed: ${error.message}`, "err");
-      event.target.checked = !enabled;
+      await refreshSettings();
     } finally {
-      event.target.disabled = false;
+      event.target.disabled = Boolean(settingsState?.startup.error);
     }
     refreshStatus();
   });

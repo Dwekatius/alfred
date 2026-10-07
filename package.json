@@ -22,7 +22,7 @@
     "install-startup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-startup.ps1",
     "remove-startup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/remove-startup.ps1",
     "tray": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tray.ps1",
-    "install-tray": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-tray.ps1 -Startup",
+    "install-tray": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-tray.ps1",
     "remove-tray": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/remove-tray.ps1",
     "dashboard": "node dist/src/dashboard.js",
     "install-dashboard": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-dashboard.ps1"

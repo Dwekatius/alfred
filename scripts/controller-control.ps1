@@ -47,8 +47,18 @@ function Get-AgentStatus {
   return $null
 }
 
+function Open-Dashboard {
+  $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+  $script = Join-Path $ProjectRoot 'scripts\dashboard-window.ps1'
+  try {
+    Start-Process -FilePath $powershell -ArgumentList "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$script`" -ConfigPath `"$ConfigPath`"" -WorkingDirectory $ProjectRoot -WindowStyle Hidden -ErrorAction Stop | Out-Null
+  } catch {
+    Write-Warning 'Could not open the dashboard. Use the dashboard shortcut or tray menu.'
+  }
+}
+
 function Start-Agent {
-  if (Get-AgentStatus) { return $true }
+  if (Get-AgentStatus) { Open-Dashboard; return $true }
   $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
   $startedTask = $false
   if ($task) {

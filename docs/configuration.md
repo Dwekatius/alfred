@@ -193,8 +193,8 @@ npm run dev               # build, then run in the foreground
 npm run pair              # pair locally (token is entered hidden)
 npm run dashboard         # run the dashboard server
 npm run install-startup   # register the logon task
-npm run remove-startup    # remove it
-npm run install-tray      # Desktop + Startup shortcut and tray icon
+npm run remove-startup    # remove the logon task and older Startup folder shortcuts
+npm run install-tray      # Desktop shortcut and tray icon; does not enable login startup
 npm run remove-tray
 npm run tray -- -Action status|start|stop|restart|pause|resume
 npm test                  # tsc + unit/integration tests
@@ -205,6 +205,7 @@ scripts\setup.ps1              # dependencies + build only (developer path)
 scripts\dashboard-window.ps1   # open the dashboard as an app window (-Page setup|settings -Theme light|dark)
 scripts\browser-signin.ps1     # open the dedicated Chrome profile for manual sign-in
 scripts\pair-window.ps1        # pairing UI as an app window
+scripts\startup-status.ps1     # report task and Startup folder launch sources
 scripts\backup.ps1             # back up config, state and sessions
 scripts\doctor.ps1             # same checks as npm run doctor
 ```

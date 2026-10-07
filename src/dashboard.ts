@@ -265,7 +265,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
 
   if (url.pathname === "/api/settings/startup" && request.method === "POST") {
     const body = await readBody(request);
-    const result = setStartup(Boolean(body.enabled));
+    const result = setStartup(Boolean(body.enabled), context.configPath);
     sendJson(response, result.ok ? 200 : 500, result);
     return;
   }

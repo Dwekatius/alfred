@@ -20,6 +20,7 @@ $ConfigPath = 'C:\\fixture data\\config.json'
 $script:taskStarts = 0
 $script:processStarts = 0
 $script:statusCalls = 0
+$script:dashboardOpens = 0
 $script:launch = $null
 function Get-AgentStatus {
   $script:statusCalls += 1
@@ -37,12 +38,13 @@ function Start-Process {
   $script:launch = @{ file = $FilePath; arguments = $ArgumentList; directory = $WorkingDirectory; windowStyle = $WindowStyle }
 }
 function Start-Sleep { param($Milliseconds, $Seconds) }
+function Open-Dashboard { $script:dashboardOpens += 1 }
 $result = Start-Agent
-@{ ok = $result; taskStarts = $script:taskStarts; processStarts = $script:processStarts; statusCalls = $script:statusCalls; launch = $script:launch } | ConvertTo-Json -Depth 4 -Compress
+@{ ok = $result; taskStarts = $script:taskStarts; processStarts = $script:processStarts; statusCalls = $script:statusCalls; dashboardOpens = $script:dashboardOpens; launch = $script:launch } | ConvertTo-Json -Depth 4 -Compress
 `, "utf8");
     const output = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", fixture], { encoding: "utf8", windowsHide: true, timeout: 15000 });
     return JSON.parse(output.trim().split(/\r?\n/).at(-1)!) as {
-      ok: boolean; taskStarts: number; processStarts: number; statusCalls: number;
+      ok: boolean; taskStarts: number; processStarts: number; statusCalls: number; dashboardOpens: number;
       launch: { file: string; arguments: string; directory: string; windowStyle: string } | null;
     };
   } finally {
@@ -73,6 +75,7 @@ test("a rejected scheduled-task start falls back to a direct launch", { skip: pr
 test("repeated starts leave an existing controller alone", { skip: process.platform !== "win32" }, () => {
   const result = runLauncherFixture({ task: false, alreadyRunning: true });
   assert.equal(result.ok, true); assert.equal(result.taskStarts, 0); assert.equal(result.processStarts, 0);
+  assert.equal(result.dashboardOpens, 1);
 });
 
 test("launcher failure and readiness timeout report failure without repeated launches", { skip: process.platform !== "win32" }, () => {

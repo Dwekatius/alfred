@@ -250,14 +250,17 @@ model activity.
 Recommended, so it survives reboots:
 
 - **Settings → Startup → Start assistant when I sign in to Windows.** This registers a per-user
-  task called `Alfred` that runs hidden at logon. It applies immediately and can be switched off
-  the same way.
-- **Tray shortcut.** `npm run install-tray` (or `scripts/install-tray.ps1 -Startup`) puts an
-  **Alfred** shortcut on your Desktop; `-Startup` also adds it to the Startup folder. The tray icon shows state at a glance:
+  task called `Alfred` that runs hidden at logon and opens the dashboard. Turning it off also removes
+  any older Alfred shortcuts from the Windows Startup folders. It keeps the desktop shortcut and the running assistant.
+- **Tray shortcut.** `npm run install-tray` puts an **Alfred** shortcut on your Desktop without enabling
+  login startup. Use the Settings toggle to enable it; the older `scripts/install-tray.ps1 -Startup`
+  option is also detected and removed by that toggle. The tray icon shows state at a glance:
   green = idle, blue = working, orange = paused, grey = stopped. Right-click for Start, Stop,
   Restart, Pause, Resume, Open logs, Open config, Run doctor, Pair.
 
 The desktop shortcut and dashboard Start button also work when the sign-in task is not installed. They launch the controller hidden with your current configuration. Reopening the desktop shortcut keeps one tray icon and one running controller.
+
+Starting Alfred opens its dashboard app window automatically. If that window is already open, Alfred brings it forward instead of opening another one. Closing the dashboard leaves Alfred running; double-click the desktop shortcut or use the tray menu to bring it back. Dry-run and one-shot diagnostic runs do not open the dashboard.
 
 The dashboard is also a normal local web app if you prefer a browser tab:
 `http://127.0.0.1:8787/?token=<your token>` — the token is in
