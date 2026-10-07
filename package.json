@@ -21,6 +21,7 @@
     "stop": "node dist/src/local-cli.js stop",
     "install-startup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-startup.ps1",
     "remove-startup": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/remove-startup.ps1",
+    "install-shortcut": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-shortcut.ps1",
     "tray": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tray.ps1",
     "install-tray": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-tray.ps1",
     "remove-tray": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/remove-tray.ps1",

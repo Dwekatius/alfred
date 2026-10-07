@@ -206,7 +206,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse,
   if (url.pathname === "/" || url.pathname === "/index.html") {
     if (!authorized(url, request, token)) {
       response.writeHead(403, { "content-type": "text/html; charset=utf-8" });
-      response.end("<html><body style='font-family:Segoe UI;background:#0f1115;color:#e6edf3;padding:40px'><h2>Open this page from the &quot;Alfred UI&quot; shortcut.</h2><p>The dashboard requires its local access token.</p></body></html>");
+      response.end("<html><body style='font-family:Segoe UI;background:#0f1115;color:#e6edf3;padding:40px'><h2>Open this page from the &quot;Alfred&quot; shortcut.</h2><p>The dashboard requires its local access token.</p></body></html>");
       return;
     }
     try {

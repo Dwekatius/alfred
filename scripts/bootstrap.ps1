@@ -72,6 +72,9 @@ if ($LASTEXITCODE -ne 0) { Write-Host '[X] Build failed.' -ForegroundColor Red; 
 Write-Host '[ok] Build complete' -ForegroundColor Green
 
 # -- 5. Dashboard + setup guide -------------------------------------------
+Write-Host '[..] Installing the Alfred desktop shortcut...' -ForegroundColor Yellow
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ProjectRoot 'scripts\install-shortcut.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Could not install the Alfred shortcut.' }
 Write-Host '[..] Starting the local dashboard...' -ForegroundColor Yellow
 & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ProjectRoot 'scripts\dashboard-window.ps1') -Page setup
 Write-Host ''

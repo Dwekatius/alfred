@@ -199,7 +199,7 @@ Settings (or config) and restart. Doctor reports the current holder while a job 
 ## Dashboard problems
 
 **The page says "Dashboard API error".** The server is not running or the token is wrong. Open it
-from the *Alfred Dashboard* shortcut or `scripts\dashboard-window.ps1`, which inject both.
+from the *Alfred* shortcut or `scripts\dashboard-window.ps1`, which inject both.
 
 **401 / "not found" for every request.** The token in the URL is stale (the file was regenerated).
 Reread `%USERPROFILE%\.pi\alfred\state\dashboard.json` and use the current values.

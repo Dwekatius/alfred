@@ -131,7 +131,8 @@ npm run tray -- -Action start|stop|restart|pause|resume|status
 ```
 
 - **Dashboard** — `http://127.0.0.1:<port>` with a per-install token; opens as a clean app window
-  via the *Alfred Dashboard* shortcut or `scripts/dashboard-window.ps1`.
+  automatically when you double-click the single *Alfred* desktop shortcut. That shortcut starts
+  the assistant and opens the dashboard; `npm run install-shortcut` installs it or repairs older shortcuts.
 - **Emergency hotkey** — `Ctrl+Alt+F9` cancels the active job immediately.
 - **Pause on human input** — if you touch the mouse or keyboard while a job is driving the PC,
   the agent stops at the next safe boundary and asks whether to resume.

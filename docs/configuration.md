@@ -194,7 +194,9 @@ npm run pair              # pair locally (token is entered hidden)
 npm run dashboard         # run the dashboard server
 npm run install-startup   # register the logon task
 npm run remove-startup    # remove the logon task and older Startup folder shortcuts
-npm run install-tray      # Desktop shortcut and tray icon; does not enable login startup
+npm run install-shortcut  # one Alfred shortcut: starts the agent and opens the dashboard
+npm run install-tray      # compatibility alias; does not enable login startup
+npm run install-dashboard # compatibility alias for the same Alfred shortcut
 npm run remove-tray
 npm run tray -- -Action status|start|stop|restart|pause|resume
 npm test                  # tsc + unit/integration tests

@@ -252,7 +252,10 @@ Recommended, so it survives reboots:
 - **Settings → Startup → Start assistant when I sign in to Windows.** This registers a per-user
   task called `Alfred` that runs hidden at logon and opens the dashboard. Turning it off also removes
   any older Alfred shortcuts from the Windows Startup folders. It keeps the desktop shortcut and the running assistant.
-- **Tray shortcut.** `npm run install-tray` puts an **Alfred** shortcut on your Desktop without enabling
+- **Alfred shortcut.** Setup installs one **Alfred** shortcut on your Desktop. Double-click it to start
+  the assistant and open the dashboard. `npm run install-shortcut` repairs it and removes older dashboard
+  shortcuts; the older `npm run install-tray` and `npm run install-dashboard` commands do the same.
+  Installing the shortcut does not enable
   login startup. Use the Settings toggle to enable it; the older `scripts/install-tray.ps1 -Startup`
   option is also detected and removed by that toggle. The tray icon shows state at a glance:
   green = idle, blue = working, orange = paused, grey = stopped. Right-click for Start, Stop,
@@ -264,7 +267,7 @@ Starting Alfred opens its dashboard app window automatically. If that window is 
 
 The dashboard is also a normal local web app if you prefer a browser tab:
 `http://127.0.0.1:8787/?token=<your token>` — the token is in
-`%USERPROFILE%\.pi\alfred\state\dashboard.json`, and the *Alfred Dashboard* shortcut opens it with
+`%USERPROFILE%\.pi\alfred\state\dashboard.json`, and the *Alfred* shortcut opens it with
 the token already applied.
 
 Sanity check from a terminal:
