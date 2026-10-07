@@ -239,6 +239,12 @@ windows-mcp backend misbehaves, then restart.
 
 ## Jobs: stuck, cancelled, queued, resumed
 
+**A job asks a question and stays "waiting for owner" after your reply.** Answer in the paired
+Telegram chat. Alfred saves the reply to that specific question before waking the worker; another
+reply cannot replace the original answer or answer a later question. Expired or cancelled questions
+are rejected explicitly. Older builds could say "Answer delivered" without saving it; update,
+build, and restart while the controller is idle. Include the job id when reporting a stuck wait.
+
 **A job is stuck "running".** Wait for the watchdog (`jobs.maxRunSeconds`, default 30 min). To stop it
 now: `/stop`, `Ctrl+Alt+F9`, or tray → Stop. If the worker ignores an abort, it is killed after
 `jobs.stopGraceMs`.

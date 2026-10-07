@@ -6,12 +6,16 @@ import { join } from "node:path";
 import { Database } from "../../src/storage/database.js";
 import { runMigrations } from "../../src/storage/migrations.js";
 import { JobRepository } from "../../src/jobs/repository.js";
+import { NullExecutor } from "../../src/jobs/scheduler.js";
 import { ArtifactRegistry } from "../../src/artifacts/registry.js";
 import { Outbox } from "../../src/telegram/outbox.js";
 import { Supervisor } from "../../src/supervisor.js";
 import { generatePairingCode } from "../../src/telegram/auth.js";
 import { Logger } from "../../src/logging.js";
 import { dataPaths } from "../../src/config.js";
+import { ToolBroker } from "../../src/tools/broker.js";
+import { DesktopLease } from "../../src/tools/desktop-lease.js";
+import { registerTelegramTools } from "../../src/tools/telegram-tools.js";
 import { testConfig } from "../fixtures/config.js";
 import type { SecretStore } from "../../src/platform/secrets.js";
 import type { TelegramClient, TgUpdate } from "../../src/telegram/api.js";
@@ -158,4 +162,113 @@ test("plain text answers a pending owner question instead of creating a job", ()
   assert.equal(admissions[0]?.decision, "question_answer");
   assert.equal(repo.listQueuedJobs().length, 0);
   db.close();
+});
+
+for (const notifyImmediately of [true, false]) {
+  test(`an owner reply resumes the waiting tool through ${notifyImmediately ? "notification" : "database polling"}`, { timeout: 5000 }, async (t) => {
+    const { config, db, repo, supervisor, outbox } = setup();
+    supervisor.admitBatch([ownerMessage(40, "check repository traffic")]);
+    const job = repo.listQueuedJobs()[0]!;
+    repo.transitionJob(job.id, "starting");
+    repo.transitionJob(job.id, "running");
+    const lease = new DesktopLease();
+    lease.grant(job.id, job.lease_generation);
+    const broker = new ToolBroker({ db, repo, config, logger: new Logger({}, { toStderr: false }), lease,
+      approvals: supervisor.approvals, questions: supervisor.questions, artifacts: supervisor.artifacts, getOutbox: () => outbox });
+    registerTelegramTools(broker);
+    let notifications = 0;
+    if (notifyImmediately) supervisor.setExecutor(Object.assign(new NullExecutor(), {
+      notifyOwnerAnswer(questionId: string, answer: string) {
+        const saved = supervisor.questions.get(questionId);
+        assert.equal(saved?.status, "answered", "persist before waking the worker");
+        assert.equal(saved.answer, answer);
+        notifications += 1;
+        broker.resolveOwnerAnswer(questionId, answer);
+      },
+    }));
+    const abort = new AbortController();
+    const deadline = setTimeout(() => abort.abort(), 3000);
+    const pending = broker.execute({ jobId: job.id, leaseGeneration: job.lease_generation,
+      requestId: "owner-input", toolCallId: "owner-input", toolName: "request_owner_input",
+      args: { question: "Which repository?" }, signal: abort.signal });
+    t.after(async () => { clearTimeout(deadline); abort.abort(); await pending; db.close(); });
+    // The tool may yield once at its pause gate before creating the question.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(repo.getJob(job.id)?.state, "waiting_for_owner");
+    const question = supervisor.questions.findPendingForJob(job.id)!;
+    assert.ok(question);
+    const admission = supervisor.admitBatch([ownerMessage(41, "the project repository")])[0]!;
+    assert.equal(admission.decision, "question_answer");
+    await supervisor.applyControlById(admission.controlId!);
+    assert.equal(supervisor.questions.get(question.id)?.status, "answered");
+    const result = await pending;
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.result.details?.answer, "the project repository");
+    assert.equal(supervisor.questions.get(question.id)?.status, "answered");
+    assert.ok(supervisor.questions.get(question.id)?.answered_at);
+    assert.equal(repo.getJob(job.id)?.state, "running");
+    assert.equal(broker.pendingQuestionCount, 0);
+    assert.equal(repo.listQueuedJobs().length, 0);
+    assert.equal(notifications, notifyImmediately ? 1 : 0);
+    assert.match(outbox.getByLogicalKey(`ctl:${admission.controlId}:reply`)!.payload_json, /Answer delivered/);
+    await supervisor.applyControlById(admission.controlId!);
+    assert.equal(notifications, notifyImmediately ? 1 : 0, "replaying an applied control cannot deliver it twice");
+  });
+}
+
+test("rapid replies keep the original answer and cannot answer a later question", async (t) => {
+  const { db, repo, supervisor, outbox } = setup();
+  t.after(() => db.close());
+  supervisor.admitBatch([ownerMessage(50, "task")]);
+  const job = repo.listQueuedJobs()[0]!;
+  repo.transitionJob(job.id, "starting");
+  repo.transitionJob(job.id, "running");
+  repo.transitionJob(job.id, "waiting_for_owner");
+  const question = supervisor.questions.create({ jobId: job.id, ownerUserId: "1001", ownerChatId: "1001", question: "Which repository?", ttlMs: 60000 });
+  const admissions = supervisor.admitBatch([ownerMessage(51, "the project repository"), ownerMessage(52, "???")]);
+  const delivered: string[] = [];
+  supervisor.setExecutor(Object.assign(new NullExecutor(), { notifyOwnerAnswer(_questionId: string, answer: string) { delivered.push(answer); } }));
+  await supervisor.applyControlById(admissions[0]!.controlId!);
+  // Simulate the tool issuing its next question before a delayed control is applied.
+  const next = supervisor.questions.create({ jobId: job.id, ownerUserId: "1001", ownerChatId: "1001", question: "Which period?", ttlMs: 60000 });
+  await supervisor.applyControlById(admissions[1]!.controlId!);
+  assert.equal(supervisor.questions.get(question.id)?.answer, "the project repository");
+  assert.equal(supervisor.questions.get(next.id)?.status, "pending");
+  assert.equal(supervisor.questions.get(next.id)?.answer, null);
+  assert.deepEqual(delivered, ["the project repository", "the project repository"]);
+  assert.match(outbox.getByLogicalKey(`ctl:${admissions[1]!.controlId}:reply`)!.payload_json, /original answer was kept/);
+});
+
+test("invalid question controls never acknowledge delivery or wake a worker", async (t) => {
+  for (const kind of ["expired", "cancelled", "wrong_job", "missing", "finished_job"] as const) {
+    await t.test(kind, async (t) => {
+      const { db, repo, supervisor, outbox } = setup();
+      t.after(() => db.close());
+      supervisor.admitBatch([ownerMessage(60, "task")]);
+      const job = repo.listQueuedJobs()[0]!;
+      repo.transitionJob(job.id, "starting");
+      repo.transitionJob(job.id, "running");
+      repo.transitionJob(job.id, "waiting_for_owner");
+      const question = supervisor.questions.create({ jobId: job.id, ownerUserId: "1001", ownerChatId: "1001", question: "Which repository?", ttlMs: kind === "expired" ? -1 : 60000 });
+      if (kind === "cancelled") supervisor.questions.cancelForJob(job.id);
+      let controlJobId = job.id;
+      if (kind === "wrong_job") {
+        const other = repo.createJob({ conversationId: job.conversation_id, taskText: "other", taskLabel: "other", configHash: "test", modelJson: "{}" });
+        repo.transitionJob(other.id, "starting");
+        repo.transitionJob(other.id, "running");
+        controlJobId = other.id;
+      }
+      if (kind === "finished_job") repo.transitionJob(job.id, "failed");
+      let notified = false;
+      supervisor.setExecutor(Object.assign(new NullExecutor(), { notifyOwnerAnswer() { notified = true; } }));
+      const controlId = repo.insertControl({ jobId: controlJobId, command: JSON.stringify({ type: "answer_question", questionId: kind === "missing" ? "Q-missing" : question.id, answer: "the project repository" }) });
+      await supervisor.applyControlById(controlId);
+      assert.equal(notified, false);
+      assert.equal(supervisor.questions.get(question.id)?.answer, null);
+      if (kind === "expired") assert.equal(supervisor.questions.get(question.id)?.status, "expired");
+      const reply = outbox.getByLogicalKey(`ctl:${controlId}:reply`)!.payload_json;
+      assert.match(reply, /no longer waiting/);
+      assert.doesNotMatch(reply, /Answer delivered/);
+    });
+  }
 });

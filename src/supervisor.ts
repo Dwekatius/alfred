@@ -807,11 +807,18 @@ export class Supervisor {
         return;
       }
       case "answer_question": {
-        const updated = this.questions.get(control.questionId);
-        if (updated && updated.status === "answered" && this.executor.notifyOwnerAnswer) {
-          this.executor.notifyOwnerAnswer(control.questionId, updated.answer ?? control.answer);
+        const jobId = this.repo.getControl(controlId)?.job_id;
+        const job = jobId ? this.repo.getJob(jobId) : undefined;
+        const updated = job && ["running", "waiting_for_owner", "paused", "waiting_for_unlock"].includes(job.state)
+          ? this.questions.answerById(control.questionId, job.id, control.answer)
+          : undefined;
+        if (!updated || updated.answer === null) {
+          this.replyForControl(controlId, "This question is no longer waiting for an answer.");
+          return;
         }
-        this.replyForControl(controlId, "Answer delivered.");
+        // The broker can recover from a missed notification by reading the saved answer.
+        this.executor.notifyOwnerAnswer?.(updated.id, updated.answer);
+        this.replyForControl(controlId, updated.answer === control.answer ? "Answer delivered." : "This question was already answered. The original answer was kept.");
         return;
       }
     }

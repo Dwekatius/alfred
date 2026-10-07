@@ -49,11 +49,23 @@ export class QuestionRepository {
     return this.db.transaction(() => {
       const row = this.findPendingForJob(jobId);
       if (!row) return undefined;
-      if (row.expires_at < new Date().toISOString()) {
-        this.db.prepare("UPDATE questions SET status = 'expired' WHERE id = ?").run(row.id);
+      return this.answerById(row.id, jobId, answer);
+    });
+  }
+
+  /** Persist an answer to the exact question admitted with the control; keep the first answer on replay. */
+  answerById(questionId: string, jobId: string, answer: string): QuestionRow | undefined {
+    return this.db.transaction(() => {
+      const row = this.get(questionId);
+      if (!row || row.job_id !== jobId) return undefined;
+      if (row.status === "answered") return row;
+      if (row.status !== "pending") return undefined;
+      const now = new Date().toISOString();
+      if (row.expires_at <= now) {
+        this.db.prepare("UPDATE questions SET status = 'expired' WHERE id = ? AND status = 'pending'").run(row.id);
         return undefined;
       }
-      this.db.prepare("UPDATE questions SET status = 'answered', answer = ?, answered_at = ? WHERE id = ? AND status = 'pending'").run(answer, new Date().toISOString(), row.id);
+      this.db.prepare("UPDATE questions SET status = 'answered', answer = ?, answered_at = ? WHERE id = ? AND status = 'pending'").run(answer, now, row.id);
       return this.get(row.id);
     });
   }

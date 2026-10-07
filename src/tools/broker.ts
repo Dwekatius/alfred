@@ -316,26 +316,26 @@ export class ToolBroker {
           payload: { variant: "question", text: `${input.question}${optionsText}\n\nReply in this chat to answer (question ${question.id}).` },
         });
         const answer = await new Promise<string>((resolve, reject) => {
-          this.pendingQuestions.set(question.id, { resolve, reject });
+          const cleanup = () => {
+            clearInterval(timer);
+            request.signal.removeEventListener("abort", onAbort);
+            this.pendingQuestions.delete(question.id);
+          };
+          const succeed = (value: string) => { cleanup(); resolve(value); };
+          const fail = (error: Error) => { cleanup(); reject(error); };
+          const onAbort = () => fail(new Error("Question wait cancelled"));
           const timer = setInterval(() => {
             const row = deps.questions.get(question.id);
             if (row && row.status === "answered" && row.answer !== null) {
-              clearInterval(timer);
-              this.pendingQuestions.delete(question.id);
-              resolve(row.answer);
+              succeed(row.answer);
+              return;
             }
             if (row && (row.status === "expired" || row.status === "cancelled")) {
-              clearInterval(timer);
-              this.pendingQuestions.delete(question.id);
-              reject(new Error("Question expired or was cancelled"));
+              fail(new Error("Question expired or was cancelled"));
             }
           }, 1000);
           timer.unref?.();
-          const onAbort = () => {
-            clearInterval(timer);
-            this.pendingQuestions.delete(question.id);
-            reject(new Error("Question wait cancelled"));
-          };
+          this.pendingQuestions.set(question.id, { resolve: succeed, reject: fail });
           if (request.signal.aborted) onAbort();
           else request.signal.addEventListener("abort", onAbort, { once: true });
         });
