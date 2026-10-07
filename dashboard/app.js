@@ -99,7 +99,7 @@
 
       const dot = $("statusDot");
       dot.className = "dot";
-      if (controller?.stopping) dot.classList.add("attention");
+      if (controller?.stopping || controller?.fatal || (state.activeJob && ["paused", "waiting_for_owner", "waiting_for_unlock"].includes(state.activeJob.state))) dot.classList.add("attention");
       else if (state.activeJob) dot.classList.add("busy");
       else if (state.controllerRunning) dot.classList.add("running");
       else dot.classList.add("stopped");
@@ -109,10 +109,13 @@
       const serviceState = String(status.taskState ?? "");
       const serviceLabel = /^Ready$/i.test(serviceState) ? "ready" : /^Running$/i.test(serviceState) ? "running" : /^Disabled$/i.test(serviceState) ? "disabled" : "not installed";
 
-      $("statusText").textContent = state.activeJob
-        ? `Working on ${state.activeJob.id} · ${state.activeJob.label ?? ""}`
+      const jobLabels = { starting: "Starting", running: "Working on", paused: "Paused", waiting_for_owner: "Waiting for your answer or approval", waiting_for_unlock: "Waiting for you to unlock the PC", cancelling: "Stopping" };
+      $("statusText").textContent = controller?.fatal
+        ? "Telegram connection error · check the activity panel"
+        : state.activeJob
+        ? `${jobLabels[state.activeJob.state] ?? state.activeJob.state} ${state.activeJob.id} · ${state.activeJob.label ?? ""}${["paused", "waiting_for_unlock"].includes(state.activeJob.state) ? " · Resume to continue" : ""}`
         : state.controllerRunning
-          ? `Running and idle · ${status.queued ?? 0} queued`
+          ? `${controller?.dispatchSuspended ? "Queue stopped · /run-next in Telegram" : "Running and idle"} · ${status.queued ?? 0} queued`
           : `Stopped · service ${serviceLabel}`;
 
       $("modelChip").innerHTML = `model <strong>${status.model.modelId}</strong> · ${status.model.thinking}`;
@@ -127,8 +130,8 @@
         primary.textContent = "Start assistant";
         primary.classList.remove("stop");
       }
-      $("pauseBtn").disabled = !state.activeJob;
-      $("resumeBtn").disabled = !state.activeJob || state.activeJob.state !== "paused";
+      $("pauseBtn").disabled = !state.activeJob || !["running", "waiting_for_owner"].includes(state.activeJob.state);
+      $("resumeBtn").disabled = !state.activeJob || !["paused", "waiting_for_unlock"].includes(state.activeJob.state);
       $("footerInfo").textContent = `local dashboard · 127.0.0.1 · ${new Date(status.time).toLocaleTimeString()}`;
     } catch (error) {
       $("statusText").textContent = `Dashboard API error: ${error.message}`;
@@ -1000,12 +1003,40 @@
     refreshStatus();
   });
 
+  $("pauseInputToggle").addEventListener("change", async (event) => {
+    const toggle = event.target;
+    const enabled = toggle.checked;
+    const previous = settingsState?.settings.pauseOnObservedHumanInput ?? !enabled;
+    toggle.disabled = true;
+    $("saveBehaviourBtn").disabled = true;
+    setLine("behaviourResult", "Saving pause preference…", "busy");
+    try {
+      const result = await api("/api/settings", { method: "POST", body: { pauseOnObservedHumanInput: enabled } });
+      if (!result.ok) throw new Error(result.message || "Settings were not saved");
+      toggle.checked = result.settings.pauseOnObservedHumanInput;
+      if (settingsState) settingsState.settings = result.settings;
+      setLine("behaviourResult", `Saved. Pause on local input is now ${toggle.checked ? "on" : "off"}; applies immediately. An already paused task still needs Resume.`, "ok");
+    } catch (error) {
+      // Show what is actually saved, even when the response was lost.
+      toggle.checked = previous;
+      try {
+        const saved = await api("/api/settings");
+        toggle.checked = saved.settings.pauseOnObservedHumanInput;
+        settingsState = saved;
+      } catch { /* keep the last known saved value */ }
+      setLine("behaviourResult", `Could not save pause preference: ${error.message}`, "err");
+    } finally {
+      toggle.disabled = false;
+      $("saveBehaviourBtn").disabled = false;
+    }
+    refreshStatus();
+  });
+
   $("saveBehaviourBtn").addEventListener("click", async () => {
     setLine("behaviourResult", "Saving…", "busy");
     const result = await api("/api/settings", {
       method: "POST",
       body: {
-        pauseOnObservedHumanInput: $("pauseInputToggle").checked,
         localStopHotkey: $("hotkeyInput").value.trim(),
         maxRunSeconds: Math.max(1, Number($("maxRunInput").value) || 30) * 60,
         maxQueued: Math.max(1, Number($("maxQueuedInput").value) || 5),

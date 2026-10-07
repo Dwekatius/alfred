@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { Database } from "../../src/storage/database.js";
 import { runMigrations } from "../../src/storage/migrations.js";
 import { JobRepository } from "../../src/jobs/repository.js";
@@ -12,7 +13,7 @@ import { Outbox } from "../../src/telegram/outbox.js";
 import { Supervisor } from "../../src/supervisor.js";
 import { generatePairingCode } from "../../src/telegram/auth.js";
 import { Logger } from "../../src/logging.js";
-import { dataPaths } from "../../src/config.js";
+import { dataPaths, saveConfigAtomic } from "../../src/config.js";
 import { ToolBroker } from "../../src/tools/broker.js";
 import { DesktopLease } from "../../src/tools/desktop-lease.js";
 import { registerTelegramTools } from "../../src/tools/telegram-tools.js";
@@ -30,8 +31,9 @@ function setup(overrides: Parameters<typeof testConfig>[0] = {}) {
   const secrets: SecretStore = { get: async () => undefined, set: async () => undefined, delete: () => undefined, healthCheck: async () => true };
   const fakeClient = { answerCallbackQuery: async () => true, sendMessage: async () => ({ message_id: 1 }) } as unknown as TelegramClient;
   const outbox = new Outbox(db, fakeClient, { getOwnerChatId: () => config.telegram.ownerChatId, artifacts, logger, minimumIntervalMs: 1 });
-  const supervisor = new Supervisor({ config, configPath: join(tmpdir(), `pi-tg-cfg-${randomUUID()}.json`), paths: dataPaths(config), db, repo, secrets, logger, runId: "run-test", outboxOverride: outbox });
-  return { config, db, repo, supervisor, outbox };
+  const configPath = join(tmpdir(), `pi-tg-cfg-${randomUUID()}.json`);
+  const supervisor = new Supervisor({ config, configPath, paths: dataPaths(config), db, repo, secrets, logger, runId: "run-test", outboxOverride: outbox });
+  return { config, configPath, db, repo, supervisor, outbox };
 }
 
 function ownerMessage(updateId: number, text: string, date = Math.floor(Date.now() / 1000)): TgUpdate {
@@ -164,8 +166,8 @@ test("plain text answers a pending owner question instead of creating a job", ()
   db.close();
 });
 
-for (const notifyImmediately of [true, false]) {
-  test(`an owner reply resumes the waiting tool through ${notifyImmediately ? "notification" : "database polling"}`, { timeout: 5000 }, async (t) => {
+for (const { notifyImmediately, paused } of [{ notifyImmediately: true, paused: false }, { notifyImmediately: false, paused: false }, { notifyImmediately: true, paused: true }]) {
+  test(`an owner reply resumes the waiting tool through ${paused ? "a manual pause" : notifyImmediately ? "notification" : "database polling"}`, { timeout: 5000 }, async (t) => {
     const { config, db, repo, supervisor, outbox } = setup();
     supervisor.admitBatch([ownerMessage(40, "check repository traffic")]);
     const job = repo.listQueuedJobs()[0]!;
@@ -178,6 +180,8 @@ for (const notifyImmediately of [true, false]) {
     registerTelegramTools(broker);
     let notifications = 0;
     if (notifyImmediately) supervisor.setExecutor(Object.assign(new NullExecutor(), {
+      async pause(jobId: string) { broker.setPaused(jobId, true); lease.pause(jobId); },
+      async resume(jobId: string) { broker.setPaused(jobId, false); lease.resume(jobId); },
       notifyOwnerAnswer(questionId: string, answer: string) {
         const saved = supervisor.questions.get(questionId);
         assert.equal(saved?.status, "answered", "persist before waking the worker");
@@ -197,6 +201,12 @@ for (const notifyImmediately of [true, false]) {
     assert.equal(repo.getJob(job.id)?.state, "waiting_for_owner");
     const question = supervisor.questions.findPendingForJob(job.id)!;
     assert.ok(question);
+    if (paused) {
+      await supervisor.applyControlById(repo.insertControl({ jobId: job.id, command: JSON.stringify({ type: "pause" }) }));
+      await supervisor.applyControlById(repo.insertControl({ jobId: job.id, command: JSON.stringify({ type: "resume" }) }));
+      assert.equal(repo.getJob(job.id)?.state, "waiting_for_owner", "resuming cannot bypass a pending question");
+      await supervisor.applyControlById(repo.insertControl({ jobId: job.id, command: JSON.stringify({ type: "pause" }) }));
+    }
     const admission = supervisor.admitBatch([ownerMessage(41, "the project repository")])[0]!;
     assert.equal(admission.decision, "question_answer");
     await supervisor.applyControlById(admission.controlId!);
@@ -206,13 +216,19 @@ for (const notifyImmediately of [true, false]) {
     if (result.ok) assert.equal(result.result.details?.answer, "the project repository");
     assert.equal(supervisor.questions.get(question.id)?.status, "answered");
     assert.ok(supervisor.questions.get(question.id)?.answered_at);
-    assert.equal(repo.getJob(job.id)?.state, "running");
+    assert.equal(repo.getJob(job.id)?.state, paused ? "paused" : "running", "answering cannot remove a manual pause");
     assert.equal(broker.pendingQuestionCount, 0);
     assert.equal(repo.listQueuedJobs().length, 0);
     assert.equal(notifications, notifyImmediately ? 1 : 0);
     assert.match(outbox.getByLogicalKey(`ctl:${admission.controlId}:reply`)!.payload_json, /Answer delivered/);
     await supervisor.applyControlById(admission.controlId!);
     assert.equal(notifications, notifyImmediately ? 1 : 0, "replaying an applied control cannot deliver it twice");
+    if (paused) {
+      assert.match(outbox.getByLogicalKey(`ctl:${admission.controlId}:reply`)!.payload_json, /still paused/);
+      await supervisor.applyControlById(repo.insertControl({ jobId: job.id, command: JSON.stringify({ type: "resume" }) }));
+      assert.equal(repo.getJob(job.id)?.state, "running");
+      assert.equal(lease.isPaused(job.id), false);
+    }
   });
 }
 
@@ -237,6 +253,45 @@ test("rapid replies keep the original answer and cannot answer a later question"
   assert.equal(supervisor.questions.get(next.id)?.answer, null);
   assert.deepEqual(delivered, ["the project repository", "the project repository"]);
   assert.match(outbox.getByLogicalKey(`ctl:${admissions[1]!.controlId}:reply`)!.payload_json, /original answer was kept/);
+});
+
+test("a saved input preference applies before the next event and manual pause still works", async (t) => {
+  const { config, configPath, db, repo, supervisor } = setup();
+  t.after(() => { db.close(); rmSync(configPath, { force: true }); });
+  supervisor.admitBatch([ownerMessage(70, "task")]);
+  const job = repo.listQueuedJobs()[0]!;
+  repo.transitionJob(job.id, "starting");
+  repo.transitionJob(job.id, "running");
+  saveConfigAtomic(configPath, { ...config, desktop: { ...config.desktop, pauseOnObservedHumanInput: false } });
+  supervisor.handleHumanTakeover("mouse");
+  assert.equal(supervisor.getConfig().desktop.pauseOnObservedHumanInput, false);
+  assert.equal(repo.getJob(job.id)?.state, "running", "do not wait for the five-second ticker to apply the switch");
+  await supervisor.applyControlById(repo.insertControl({ jobId: job.id, command: JSON.stringify({ type: "pause" }) }));
+  supervisor.handleHumanTakeover("keyboard");
+  assert.equal(repo.getJob(job.id)?.state, "paused", "disabling input pauses must not disable manual pause");
+});
+
+test("status questions bypass a paused task's queue, while ordinary tasks stay queued", async (t) => {
+  const { db, repo, supervisor, outbox } = setup();
+  t.after(() => db.close());
+  supervisor.admitBatch([ownerMessage(80, "research clients")]);
+  const job = repo.listQueuedJobs()[0]!;
+  repo.transitionJob(job.id, "starting");
+  repo.transitionJob(job.id, "running");
+  repo.transitionJob(job.id, "paused", { reason: "local mouse input detected" });
+  for (const [index, text] of ["Are you working?", "Done ?", "We're u working cuz I saw only chrome open with nothing happening"].entries()) {
+    const admission = supervisor.admitBatch([ownerMessage(81 + index, text)])[0]!;
+    assert.equal(admission.decision, "control");
+    assert.equal(admission.highPriority, true);
+    await supervisor.applyControlById(admission.controlId!);
+    const reply = outbox.getByLogicalKey(`ctl:${admission.controlId}:reply`)!.payload_json;
+    assert.match(reply, /Paused.*local mouse input detected/);
+    assert.match(reply, /resume/);
+    assert.doesNotMatch(reply, /Working on/);
+  }
+  assert.equal(repo.countQueued(), 0);
+  assert.equal(supervisor.admitBatch([ownerMessage(84, "Check my email")])[0]?.decision, "job");
+  assert.equal(repo.countQueued(), 1);
 });
 
 test("invalid question controls never acknowledge delivery or wake a worker", async (t) => {

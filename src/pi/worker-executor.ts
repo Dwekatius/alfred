@@ -15,6 +15,7 @@ import type { ToolBroker } from "../tools/broker.js";
 import type { DesktopLease } from "../tools/desktop-lease.js";
 import type { ArtifactRegistry } from "../artifacts/registry.js";
 import { findCachedModel } from "./models.js";
+import { describeToolActivity } from "../jobs/activity.js";
 import { abortable, DisposableWorkerPool, terminateWorker } from "./worker-pool.js";
 
 export interface WorkerExecutorDeps {
@@ -220,6 +221,7 @@ export class WorkerExecutor implements JobExecutor {
         if (message.kind === "tool_start" || message.kind === "tool_end") this.deps.onStream?.(handle.jobId, "tool", message.summary);
         else if (message.kind === "state") this.deps.onStream?.(handle.jobId, "state", message.summary);
         if (message.kind === "state") this.deps.onProgress?.(handle.jobId, message.summary);
+        else if (message.kind === "tool_start") this.deps.onProgress?.(handle.jobId, describeToolActivity(message.toolName ?? ""));
         return;
       }
       case "stream": {

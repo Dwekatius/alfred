@@ -18,7 +18,8 @@ import { Outbox } from "./telegram/outbox.js";
 import { TelegramClient, type TgMessage, type TgUpdate } from "./telegram/api.js";
 import { TelegramPoller, type Admission } from "./telegram/poller.js";
 import { Authorizer, PairingService, type OwnerIds } from "./telegram/auth.js";
-import { buildHelpText, buildModelHelpText, parseCallbackData, parseCommandText, type ParsedCommand } from "./telegram/commands.js";
+import { buildHelpText, buildModelHelpText, isJobStatusQuery, parseCallbackData, parseCommandText, type ParsedCommand } from "./telegram/commands.js";
+import { describeToolActivity } from "./jobs/activity.js";
 import { formatDuration, nowInTimeZone, splitMessage, taskLabel, withPartNumbering } from "./telegram/format.js";
 import { ArtifactRegistry } from "./artifacts/registry.js";
 import { ensureRemoteModelFiles, findCachedModel, updateOpenRouterRouting } from "./pi/models.js";
@@ -311,7 +312,7 @@ export class Supervisor {
   private pumpTypingIndicator(): void {
     const active = this.repo.getActiveJob();
     const chatId = this.config.telegram.ownerChatId;
-    if (!active || !chatId || !this.client) return;
+    if (!active || !["starting", "running"].includes(active.state) || !chatId || !this.client) return;
     const now = Date.now();
     if (now - this.lastTypingAt < 4500) return;
     this.lastTypingAt = now;
@@ -330,6 +331,7 @@ export class Supervisor {
         if (entry.at < cutoff) this.mediaGroups.delete(groupId);
       }
       await this.applyPendingControls();
+      this.pumpJobHeartbeat();
       this.scheduler.notify();
     } catch (error) {
       this.logger.error("tick.failed", "Periodic tick failed.", { message: redactString((error as Error).message), eventCode: "TICK_FAILED" });
@@ -372,6 +374,8 @@ export class Supervisor {
 
   /** Physical owner input was detected: pause the active job at the next boundary. */
   handleHumanTakeover(kind: string): void {
+    // A dashboard change takes effect before the next input event, even between ticks.
+    this.reloadConfigIfChanged();
     if (!this.config.desktop.pauseOnObservedHumanInput) return;
     const active = this.repo.getActiveJob();
     if (!active || active.state !== "running") return;
@@ -475,7 +479,7 @@ export class Supervisor {
 
     // An answer to a pending owner question. Plain text while waiting is the answer.
     const active = this.repo.getActiveJob();
-    if (active && active.state === "waiting_for_owner" && !text.startsWith("/")) {
+    if (active && ["waiting_for_owner", "paused"].includes(active.state) && !text.startsWith("/")) {
       const pending = this.questions.findPendingForJob(active.id);
       if (pending) {
         const controlId = this.repo.insertControl({ sourceUpdateId: update.update_id, jobId: active.id, command: encodeControl({ type: "answer_question", questionId: pending.id, answer: text }) });
@@ -483,6 +487,13 @@ export class Supervisor {
         this.repo.setReceiveCursor(update.update_id);
         return { updateId: update.update_id, decision: "question_answer", controlId, jobId: active.id, highPriority: true };
       }
+    }
+
+    if (active && !message.photo?.length && !message.document && isJobStatusQuery(text)) {
+      const controlId = this.repo.insertControl({ sourceUpdateId: update.update_id, jobId: active.id, command: encodeControl({ type: "job_status" }) });
+      this.repo.admitUpdate(update.update_id, { kind: "message", decision: "control", messageTs: message.date, controlId, jobId: active.id });
+      this.repo.setReceiveCursor(update.update_id);
+      return { updateId: update.update_id, decision: "control", controlId, jobId: active.id, highPriority: true };
     }
 
     const parsed = parseCommandText(text);
@@ -656,7 +667,8 @@ export class Supervisor {
   private handleSchedulerEvent(event: SchedulerEvent): void {
     switch (event.type) {
       case "job_started": {
-        // Chat-style UX: the typing indicator is the only "started" signal.
+        // Fast replies stay quiet; longer tasks receive bounded progress updates.
+        this.lastProgressAt.set(event.job.id, Date.now());
         break;
       }
       case "job_finished": {
@@ -731,6 +743,9 @@ export class Supervisor {
         return;
       case "status":
         this.replyForControl(controlId, await this.buildStatusText());
+        return;
+      case "job_status":
+        this.replyForControl(controlId, this.buildJobStatusText());
         return;
       case "queue":
         this.replyForControl(controlId, this.buildQueueText());
@@ -818,7 +833,8 @@ export class Supervisor {
         }
         // The broker can recover from a missed notification by reading the saved answer.
         this.executor.notifyOwnerAnswer?.(updated.id, updated.answer);
-        this.replyForControl(controlId, updated.answer === control.answer ? "Answer delivered." : "This question was already answered. The original answer was kept.");
+        const reply = updated.answer === control.answer ? "Answer delivered." : "This question was already answered. The original answer was kept.";
+        this.replyForControl(controlId, job?.state === "paused" ? `${reply} Job ${job.id} is still paused; use /resume to continue PC actions.` : reply);
         return;
       }
     }
@@ -854,9 +870,11 @@ export class Supervisor {
       this.replyForControl(controlId, `Cannot resume: ${availability.reason ?? "desktop unavailable"}.`);
       return;
     }
-    this.repo.transitionJob(active.id, "running", { reason: "owner /resume" });
+    const stillWaiting = Boolean(this.questions.findPendingForJob(active.id) || this.approvals.findPendingForJob(active.id));
+    this.repo.transitionJob(active.id, stillWaiting ? "waiting_for_owner" : "running", { reason: "owner /resume" });
     await this.executor.resume(active.id);
-    this.replyForControl(controlId, `Job ${active.id} resumed with a fresh observation.`);
+    this.lastProgressAt.set(active.id, Date.now());
+    this.replyForControl(controlId, stillWaiting ? this.buildJobStatusText() : `Job ${active.id} resumed. PC actions can continue.`);
   }
 
   private async handleStop(controlId: string, all: boolean): Promise<void> {
@@ -1113,6 +1131,48 @@ export class Supervisor {
 
   // ------------------------------------------------------------------ status text
 
+  private buildJobStatusText(now = Date.now()): string {
+    const active = this.repo.getActiveJob();
+    if (!active) return `No task is running. ${this.repo.countQueued()} queued${this.repo.isDispatchSuspended() ? "; use /run-next to start the queue" : ""}.`;
+    const lines = [`${active.id}: ${active.task_label}`];
+    if (active.state === "paused") {
+      const state = this.repo.listJobEvents(active.id).find((event) => event.event_type === "state");
+      const reason = state?.summary?.match(/-> paused \((.*)\)$/)?.[1];
+      lines.push(`Paused${reason ? `: ${reason}` : ""}. PC actions are stopped. Use /resume to continue or /stop to cancel.`);
+    } else if (active.state === "waiting_for_owner") {
+      const question = this.questions.findPendingForJob(active.id);
+      const approval = this.approvals.findPendingForJob(active.id);
+      lines.push(question ? `Waiting for your reply: ${question.question}` : approval ? `Waiting for approval: ${approval.preview}\nUse /approve ${approval.id} or /reject ${approval.id}.` : "Waiting for your input.");
+    } else if (active.state === "waiting_for_unlock") {
+      lines.push("Paused because the desktop is unavailable. Unlock your PC, then use /resume.");
+    } else if (active.state === "cancelling") {
+      lines.push("Stopping the task; waiting for the current operation to end.");
+    } else {
+      lines.push(active.state === "starting" ? "Starting the task." : "Working on the task.");
+      const latest = this.repo.listJobEvents(active.id, 1)[0];
+      if (latest?.tool_name) {
+        const failed = latest.event_type === "tool_error" || latest.summary?.endsWith(" failed");
+        lines.push(`${failed ? "Last failed step" : latest.event_type === "tool_end" ? "Last completed step" : "Current step"}: ${describeToolActivity(latest.tool_name)}.`);
+      }
+      if (latest && now - Date.parse(latest.timestamp) >= 10000) lines.push(`Last recorded activity: ${formatDuration(now - Date.parse(latest.timestamp))} ago.`);
+    }
+    if (active.started_at) lines.push(`Elapsed: ${formatDuration(now - Date.parse(active.started_at))}.`);
+    const queued = this.repo.countQueued();
+    if (queued) lines.push(`${queued} message${queued === 1 ? "" : "s"} queued behind this task.`);
+    return lines.join("\n");
+  }
+
+  /** Keep long jobs visible even while one model request or tool is taking a while. */
+  private pumpJobHeartbeat(now = Date.now()): void {
+    const active = this.repo.getActiveJob();
+    if (!active || !["starting", "running"].includes(active.state)) return;
+    const interval = Math.max(30000, this.config.notifications.progressMinimumIntervalSeconds * 1000);
+    const last = this.lastProgressAt.get(active.id) ?? Date.parse(active.started_at ?? active.created_at);
+    if (now - last < interval) return;
+    this.lastProgressAt.set(active.id, now);
+    this.enqueueOwnerText(`heartbeat:${active.id}:${now}`, this.buildJobStatusText(now), { variant: "progress" });
+  }
+
   private buildQueueText(): string {
     const queued = this.repo.listQueuedJobs();
     if (queued.length === 0) return "Queue is empty.";
@@ -1132,7 +1192,7 @@ export class Supervisor {
     if (active) {
       const elapsed = active.started_at ? formatDuration(Date.now() - Date.parse(active.started_at)) : "not started";
       const last = this.repo.lastEventSummary(active.id) ?? "no events yet";
-      lines.push(`Active job: ${active.id} [${active.state}] ${active.task_label}`);
+      lines.push(this.buildJobStatusText());
       lines.push(`Elapsed: ${elapsed}; tools: ${active.tool_calls}; model turns: ${active.model_turns}`);
       lines.push(`Last step: ${last}`);
     } else {
@@ -1175,6 +1235,8 @@ export class Supervisor {
 
   /** Throttled owner-visible progress notification. */
   notifyProgress(jobId: string, summary: string): void {
+    const job = this.repo.getJob(jobId);
+    if (!job || !["starting", "running"].includes(job.state)) return;
     const minIntervalMs = this.config.notifications.progressMinimumIntervalSeconds * 1000;
     const now = Date.now();
     const last = this.lastProgressAt.get(jobId) ?? 0;

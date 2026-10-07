@@ -239,6 +239,18 @@ windows-mcp backend misbehaves, then restart.
 
 ## Jobs: stuck, cancelled, queued, resumed
 
+**Mouse input still pauses Alfred after turning the switch off.** The switch in Settings now saves
+immediately and shows confirmation (older dashboards required a separate Save click). The saved
+preference is checked before the next input event. Turning it off keeps manual `/pause` available;
+use `/resume` once to continue a task that was already paused.
+
+**Unclear whether Alfred is working.** The dashboard distinguishes working, paused, waiting for your
+reply/approval, and waiting for unlock. Paused/waiting jobs do not send a typing indicator or working
+updates. Long jobs send short activity updates and a heartbeat after 30 seconds without an update
+(or the configured progress interval, if longer). While busy, "Are you working?", "Done?", and
+"Any updates?" get an immediate status reply instead of queuing another job. A pending clarifying
+question still takes priority: plain text answers that question; `/status` always checks status.
+
 **A job asks a question and stays "waiting for owner" after your reply.** Answer in the paired
 Telegram chat. Alfred saves the reply to that specific question before waking the worker; another
 reply cannot replace the original answer or answer a later question. Expired or cancelled questions
@@ -260,6 +272,9 @@ so the desktop is not left mid-drag. That is intentional.
 **After a controller crash, jobs say "interrupted".** By design, interrupted jobs are *not*
 replayed automatically — half-finished desktop work is rarely safe to repeat. Ask for it again, or
 reply referencing the old job, and the model continues as a new linked attempt.
+Paused and waiting jobs are also interrupted: their workers did not survive the restart, so they
+cannot honestly be resumed. Within a running controller, answering a question or approving an
+action keeps a manual pause in place; Resume returns to waiting if another owner reply is still needed.
 
 **A job finishes but the reply is empty.** The model returned nothing usable (often a provider
 hiccup or a context overflow). Check the usage line in the dashboard for the underlying error, then

@@ -84,6 +84,11 @@ it is acted on, so a crash between "received" and "queued" cannot duplicate a jo
 Admission also applies the queue limits (`jobs.maxQueued`) and rejects anything that is not from
 the paired owner.
 
+During an active task, short natural-language status checks are durable, high-priority controls;
+they do not wait in the job queue. The supervisor sends bounded activity updates for long tasks
+without forwarding model reasoning. On controller restart, every previous active worker state
+(including paused and waiting) becomes interrupted; no old job is presented as resumable without a worker.
+
 ## The worker
 
 One process per job, forked, never reused. It receives a `start_job` message and owns:

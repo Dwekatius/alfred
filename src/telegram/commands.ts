@@ -34,6 +34,13 @@ function tokenize(text: string): string[] {
   return text.trim().split(/\s+/u);
 }
 
+/** Recognize short status checks while busy, without treating normal tasks as controls. */
+export function isJobStatusQuery(text: string): boolean {
+  const value = text.trim().toLowerCase().replaceAll("’", "'").replace(/\s+/g, " ");
+  return /^(?:done|finished|still working|still running|any updates|any update|status|what's the status|what is the status|what are you doing)[?!. ]*$/.test(value)
+    || /^(?:are|were|we're) (?:you|u) (?:still )?(?:working|running|paused|done|finished)(?:[?!. ]*|[ ,]+(?:because|cuz|cos|since|i saw)\b.*)$/.test(value);
+}
+
 export function parseCommandText(text: string): ParsedCommand {
   const trimmed = text.trim();
   if (!trimmed.startsWith("/")) return { type: "task", text: trimmed };

@@ -56,7 +56,7 @@ test("cursor is durable and monotonic", () => {
   assert.equal(r.getReceiveCursor(), 9);
 });
 
-test("recovery interrupts running jobs but keeps paused/waiting", () => {
+test("recovery interrupts every old worker state, including paused and waiting jobs", () => {
   const r = repo();
   const conversation = r.ensureConversation("1", "1");
   const running = r.createJob({ conversationId: conversation.id, taskText: "a", taskLabel: "a", configHash: "h", modelJson: "{}", state: "starting" });
@@ -65,10 +65,17 @@ test("recovery interrupts running jobs but keeps paused/waiting", () => {
   r.transitionJob(paused.id, "starting");
   r.transitionJob(paused.id, "running");
   r.transitionJob(paused.id, "paused");
+  const waiting = ["waiting_for_owner", "waiting_for_unlock"] as const;
+  const waitingJobs = waiting.map((state) => {
+    const job = r.createJob({ conversationId: conversation.id, taskText: state, taskLabel: state, configHash: "h", modelJson: "{}" });
+    r.transitionJob(job.id, "starting"); r.transitionJob(job.id, "running"); r.transitionJob(job.id, state);
+    return job;
+  });
   const interrupted = r.recoverInterruptedJobs();
-  assert.deepEqual(interrupted.map((job) => job.id), [running.id]);
+  assert.deepEqual(new Set(interrupted.map((job) => job.id)), new Set([running.id, paused.id, ...waitingJobs.map((job) => job.id)]));
   assert.equal(r.getJob(running.id)!.state, "interrupted");
-  assert.equal(r.getJob(paused.id)!.state, "paused");
+  assert.equal(r.getJob(paused.id)!.state, "interrupted");
+  assert.equal(r.getActiveJob(), undefined, "no ghost worker can block the queue or accept Resume");
 });
 
 test("control rows persist until applied", () => {

@@ -192,7 +192,10 @@ export function updateSettings(
   logger.info("settings.updated", "Settings updated from the dashboard.", { eventCode: "SETTINGS_UPDATED", restartRequired });
   return {
     ok: true,
-    message: restartRequired ? "Saved. Restart the assistant to apply the new emergency hotkey." : "Saved. Applies to the next job.",
+    message: restartRequired ? "Saved. Restart the assistant to apply the new emergency hotkey."
+      : patch.pauseOnObservedHumanInput !== undefined
+        ? `Saved. Pause on local input is now ${validated.desktop.pauseOnObservedHumanInput ? "on" : "off"}; applies immediately. An already paused task still needs Resume.`
+        : "Saved. Applies to the next job.",
     restartRequired,
     settings: getSettings(validated, paths, configPath).settings,
   };

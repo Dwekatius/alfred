@@ -365,14 +365,10 @@ export class JobRepository {
 
   /** Mark jobs that were mid-flight when the previous controller died as interrupted. */
   recoverInterruptedJobs(): JobRow[] {
-    const rows = this.db.prepare("SELECT * FROM jobs WHERE state IN ('starting','running','waiting_for_owner','cancelling') OR state = 'paused'").all() as unknown as JobRow[];
+    const rows = this.db.prepare("SELECT * FROM jobs WHERE state IN ('starting','running','waiting_for_owner','waiting_for_unlock','cancelling','paused')").all() as unknown as JobRow[];
     const interrupted: JobRow[] = [];
     for (const row of rows) {
-      if (row.state === "paused" || row.state === "waiting_for_owner") {
-        // Paused/waiting states survive a restart and require explicit owner resume.
-        this.appendEvent(row.id, { eventType: "recovery", summary: `restored ${row.state} after controller restart` });
-        continue;
-      }
+      // Every old worker is gone. A paused/waiting record cannot be resumed in memory.
       try {
         this.transitionJob(row.id, "interrupted", { reason: "controller restart", errorCode: "INTERRUPTED", errorMessage: "Controller restarted while this job was active." });
         interrupted.push(this.getJob(row.id)!);

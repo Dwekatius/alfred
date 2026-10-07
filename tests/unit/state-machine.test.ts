@@ -6,6 +6,9 @@ test("valid transitions are accepted", () => {
   assert.equal(canTransition("queued", "starting"), true);
   assert.equal(canTransition("running", "paused"), true);
   assert.equal(canTransition("paused", "running"), true);
+  assert.equal(canTransition("paused", "waiting_for_owner"), true);
+  assert.equal(canTransition("waiting_for_unlock", "waiting_for_owner"), true);
+  for (const state of ["paused", "waiting_for_owner", "waiting_for_unlock"] as const) assert.equal(canTransition(state, "interrupted"), true);
   assert.equal(canTransition("cancelling", "cancelled"), true);
   assert.equal(canTransition("running", "succeeded"), true);
 });

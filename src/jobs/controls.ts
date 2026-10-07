@@ -8,6 +8,7 @@ export type ExecutableCommand = Exclude<ParsedCommand, { type: "task" } | { type
 
 export type StoredControl =
   | ExecutableCommand
+  | { type: "job_status" }
   | { type: "approval"; approvalId: string; decision: "approve" | "reject" }
   | { type: "start_job"; jobId: string }
   | { type: "discard_job"; jobId: string }
@@ -15,6 +16,8 @@ export type StoredControl =
   | { type: "answer_question"; questionId: string; answer: string };
 
 const HIGH_PRIORITY: ReadonlySet<string> = new Set([
+  "status",
+  "job_status",
   "stop",
   "stop_all",
   "pause",

@@ -284,7 +284,7 @@ export class ToolBroker {
         }
         if (job.id) {
           try {
-            deps.repo.transitionJob(job.id, "running", { reason: "approval granted" });
+            if (deps.repo.getJob(job.id)?.state === "waiting_for_owner") deps.repo.transitionJob(job.id, "running", { reason: "approval granted" });
           } catch {
             /* job may have been paused meanwhile */
           }
@@ -340,7 +340,7 @@ export class ToolBroker {
           else request.signal.addEventListener("abort", onAbort, { once: true });
         });
         try {
-          deps.repo.transitionJob(job.id, "running", { reason: "owner answered" });
+          if (deps.repo.getJob(job.id)?.state === "waiting_for_owner") deps.repo.transitionJob(job.id, "running", { reason: "owner answered" });
         } catch {
           /* may be paused */
         }

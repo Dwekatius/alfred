@@ -120,3 +120,24 @@ test("unknown tools and IPC protocol version are handled safely", async () => {
   assert.equal(IPC_PROTOCOL_VERSION, 1);
   db.close();
 });
+
+test("approval while manually paused does not resume PC actions", async (t) => {
+  const { broker, job, db, repo, lease } = setup();
+  const abort = new AbortController();
+  broker.registerHandler("fake_echo", async (_args, context) => {
+    await context.requireApproval({ actionType: "fixture", preview: "Approve this test action", payload: { value: "fixture" } });
+    return { content: [{ type: "text", text: "approved" }], details: {} };
+  });
+  const pending = broker.execute({ ...request(job, "fake_echo", { text: "test" }), signal: abort.signal });
+  t.after(async () => { abort.abort(); await pending; db.close(); });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const approvals = new ApprovalRepository(db);
+  const approval = approvals.findPendingForJob(job.id)!;
+  assert.ok(approval);
+  repo.transitionJob(job.id, "paused"); broker.setPaused(job.id, true); lease.pause(job.id);
+  assert.equal(approvals.recordDecision(approval.id, "approve"), true);
+  broker.resolveApproval(approval.id, "approve");
+  assert.equal((await pending).ok, true);
+  assert.equal(repo.getJob(job.id)?.state, "paused");
+  assert.equal(lease.isPaused(job.id), true);
+});
